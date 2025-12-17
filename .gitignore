@@ -21,3 +21,23 @@ logs/
 slots/**/heartbeat.json
 slots/**/slot_state.json
 slots/**/browser_state.json
+
+# Browser runtime profiles (NEVER COMMIT)
+browser_profiles/
+browser_profiles/**
+
+# Chrome / Chromium artifacts
+**/Cache/
+**/Code Cache/
+**/GPUCache/
+**/Service Worker/
+**/Session Storage/
+**/IndexedDB/
+**/Local Storage/
+**/Web Data*
+**/Network/
+
+# Playwright / automation artifacts
+**/SingletonLock
+**/SingletonCookie
+**/SingletonSocket
