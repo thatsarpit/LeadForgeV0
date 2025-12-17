@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+.env.*
+
+# Node
+node_modules/
+dist/
+build/
+
+# OS
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Runtime slot files (DO NOT COMMIT)
+slots/**/heartbeat.json
+slots/**/slot_state.json
+slots/**/browser_state.json

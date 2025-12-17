@@ -1,0 +1,13 @@
+{
+  "slot_id": "slot_003",
+  "status": "STOPPED",
+  "mode": "OBSERVER",
+  "busy": false,
+  "uptime_seconds": 0,
+  "last_heartbeat": null,
+  "metrics": {
+    "cpu": 0,
+    "memory": 0,
+    "throughput": 0
+  }
+}

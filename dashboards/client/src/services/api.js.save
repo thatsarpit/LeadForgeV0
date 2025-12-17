@@ -1,0 +1,41 @@
+// src/services/api.js
+
+const API_BASE = "http://localhost:8000";
+
+export async function fetchSlots() {
+  const res = await fetch(`${API_BASE}/admin/slots`);
+  if (!res.ok) {
+    throw new Error("API unavailable");
+  }
+  return res.json();
+}// src/services/api.js
+
+const API_BASE_URL = "http://localhost:8000";
+
+/**
+ * Generic helper for GET requests
+ */
+async function apiGet(path) {
+  const res = await fetch(`${API_BASE_URL}${path}`);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`API error ${res.status}: ${text}`);
+  }
+
+  return res.json();
+}
+
+/**
+ * Fetch all slots (Admin / Observer view)
+ */
+export async function fetchSlots() {
+  return apiGet("/admin/slots");
+}
+
+/**
+ * Health check (optional but useful)
+ */
+export async function fetchHealth() {
+  return apiGet("/health");
+}
