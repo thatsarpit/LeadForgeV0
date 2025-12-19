@@ -1,13 +1,9 @@
 {
-  "slot_id": "slot_004",
   "status": "STOPPED",
   "mode": "OBSERVER",
   "busy": false,
+  "pid": null,
+  "command": null,
   "uptime_seconds": 0,
-  "last_heartbeat": null,
-  "metrics": {
-    "cpu": 0,
-    "memory": 0,
-    "throughput": 0
-  }
+  "last_heartbeat": null
 }

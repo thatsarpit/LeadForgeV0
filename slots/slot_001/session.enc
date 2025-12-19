@@ -1,0 +1,132 @@
+[
+  {
+    "name": "FCCDCF",
+    "value": "%5Bnull%2Cnull%2Cnull%2Cnull%2Cnull%2Cnull%2C%5B%5B32%2C%22%5B%5C%22ea9673d5-91f8-4913-b4c6-e09d16c53422%5C%22%2C%5B1765919875%2C999000000%5D%5D%22%5D%5D%5D",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1799615876,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_gcl_au",
+    "value": "1.1.1766343490.1765919877",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1773695877,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_ga",
+    "value": "GA1.1.302685472.1765919877",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1800480106.780882,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "FCNEC",
+    "value": "%5B%5B%22AKsRol93SbjGmFtO7kqSCrEXgyxiEpj9p6iG7c2QRY1-Zql_xbBes62p6L1xohYPMg8gBj447gPmLcC8ljUWQgjjJgIRzS87w3azaYR18du2ZwGQ36gsidbwoxfpK0isMhiprB2v0ePUX0viHoxaKc4EtVpakynzIQ%3D%3D%22%5D%5D",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1797455877,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_clck",
+    "value": "a8j16s%5E2%5Eg1w%5E0%5E2176",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1797455877,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_ym_uid",
+    "value": "1765919878848383937",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1797455878,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_ym_d",
+    "value": "1765919878",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1797455878,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "im_iss",
+    "value": "t%3DeyJhbGciOiJzaGEyNTYiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiI2KjYqOCoyKjQqIiwiY2R0IjoiMTctMTItMjAyNSIsImV4cCI6MTc2NjAwNjI5NywiaWF0IjoxNzY1OTE5ODk3LCJpc3MiOiJVU0VSIiwic3ViIjoiMTM0OTAwOTQ3In0.xSRCIAYj91s-fJTcK1ThdZ8MsMZqxnxBrNaO5O1o0Mk",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1768512106.579554,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "ImeshVisitor",
+    "value": "SubUser%3D%7Cadmln%3D0%7Cadmsales%3D0%7Ccd%3D17%2FDEC%2F2025%7Ccmid%3D30%7Cctid%3D73635%7Cem%3Dt%2A%2A%2A%2A%2A%2A%2A%2A%2A%40outlook.com%7Ceotp%3D%7Cev%3DV%7Cfn%3DArpit%7Cglid%3D134900947%7Ciso%3DIN%7Cmb1%3D6262812849%7Cphcc%3D91%7Custs%3D%7Cutyp%3DN%7Cuv%3DV",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1797456106.57964,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "hd_ctval",
+    "value": "ctval%3DAll%20India",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1768512106,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_sp_id.fcfd",
+    "value": "e07657c2-4dad-42db-9fcc-5cd21e244566.1765919918.1.1765919918..c3239bca-103a-4457-87ff-b8349bcb7ddb..0cae4628-8d8f-4b4c-b316-191c9aad3987.1765919917928.1",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1800479917.929078,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "kp_user_id",
+    "value": "019b2907-8766-7ab4-84d6-18491387b82d",
+    "domain": "buyer.indiamart.com",
+    "path": "/",
+    "expires": 1797455917,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_ga_8B5NXMMZN3",
+    "value": "GS2.1.s1765919877$o1$g1$t1765920110$j56$l0$h0",
+    "domain": ".indiamart.com",
+    "path": "/",
+    "expires": 1800480110.761292,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  }
+]

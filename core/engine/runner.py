@@ -1,100 +1,107 @@
+# core/engine/runner.py
+
 import sys
-import time
 import json
+import subprocess
 from pathlib import Path
 from datetime import datetime
-
-# ----------------------------
-# Runner bootstrap
-# ----------------------------
-
-if len(sys.argv) < 2:
-    print("[RUNNER] ❌ slot_id missing")
-    sys.exit(1)
-
-slot_id = sys.argv[1]
-
-BASE = Path(__file__).resolve().parents[2]
-SLOT_DIR = BASE / "slots" / slot_id
-
-STATE_FILE = SLOT_DIR / "slot_state.json"
-COMMAND_FILE = SLOT_DIR / "command.json"
-
-print(f"[RUNNER] 🚀 Runner started for {slot_id}")
-
-# ----------------------------
-# Helpers
-# ----------------------------
-
-def load_json(path: Path, default: dict):
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text())
-    except Exception as e:
-        print(f"[RUNNER] ⚠️ Failed reading {path.name}: {e}")
-        return default
+import os
+import time
 
 
-def save_json(path: Path, data: dict):
-    path.write_text(json.dumps(data, indent=2))
+BASE_DIR = Path(__file__).resolve().parents[2]
+SLOTS_DIR = BASE_DIR / "slots"
 
 
-# ----------------------------
-# Main loop
-# ----------------------------
+def load_state(path: Path) -> dict:
+    return json.loads(path.read_text())
 
-start_time = time.time()
 
-while True:
-    state = load_json(STATE_FILE, {})
-    command = load_json(COMMAND_FILE, {})
+def write_state(path: Path, updates: dict):
+    state = load_state(path)
+    state.update(updates)
+    path.write_text(json.dumps(state, indent=2))
 
-    # Hard stop if state missing or stopped
-    if not state or state.get("status") != "RUNNING":
-        print("[RUNNER] 🛑 Slot not running, exiting")
-        break
 
-    observer = command.get("observer", True)
+def main():
+    if len(sys.argv) != 2:
+        print("Usage: runner.py <slot_id|slot_path>")
+        sys.exit(1)
 
-    # ----------------------------
-    # Update core state
-    # ----------------------------
+    arg = Path(sys.argv[1])
 
-    state["last_heartbeat"] = datetime.utcnow().isoformat()
-    state["uptime_seconds"] = int(time.time() - start_time)
-    state["busy"] = False
-
-    # ----------------------------
-    # Metrics (mock for now)
-    # ----------------------------
-
-    metrics = state.get("metrics", {})
-    metrics["cpu"] = metrics.get("cpu", 20)
-    metrics["memory"] = metrics.get("memory", 512)
-    metrics["throughput"] = metrics.get("throughput", 0)
-
-    state["metrics"] = metrics
-
-    # ----------------------------
-    # Observer vs Active
-    # ----------------------------
-
-    if observer:
-        state["mode"] = "OBSERVER"
-        print("[RUNNER] 👁 Observer mode — no actions executed")
+    if arg.is_dir():
+        slot_dir = arg.resolve()
+        slot_id = slot_dir.name
     else:
-        state["mode"] = "ACTIVE"
-        # Placeholder for real bot logic
-        print("[RUNNER] ⚙️ Active mode — processing workload")
-        state["busy"] = True
-        metrics["throughput"] += 1
+        slot_id = arg.name
+        slot_dir = (SLOTS_DIR / slot_id).resolve()
 
-    # ----------------------------
-    # Persist state
-    # ----------------------------
+    state_file = slot_dir / "slot_state.json"
 
-    save_json(STATE_FILE, state)
-    print("[RUNNER] 💓 State + heartbeat updated")
+    print(f"[RUNNER] 🚀 Booting runner for {slot_id}")
+    print(f"[RUNNER] Slot dir: {slot_dir}")
 
-    time.sleep(2)
+    if not state_file.exists():
+        raise FileNotFoundError(f"slot_state.json not found at {state_file}")
+
+    state = load_state(state_file)
+    worker_name = state.get("worker")
+
+    if not worker_name:
+        raise RuntimeError("No worker defined in slot_state.json")
+
+    now = datetime.utcnow().isoformat()
+
+    # IMPORTANT: heartbeat immediately to survive SlotManager
+    write_state(state_file, {
+        "status": "STARTING",
+        "busy": True,
+        "last_heartbeat": now,
+        "updated_at": now,
+        "pid": None,
+    })
+
+    module_path = f"core.workers.{worker_name}"
+    print(f"[RUNNER] ▶ Launching worker module {module_path}")
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(BASE_DIR)
+
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            module_path,
+            str(slot_dir),
+        ],
+        cwd=BASE_DIR,
+        env=env,
+        start_new_session=True,
+    )
+
+    write_state(state_file, {
+        "pid": proc.pid,
+        "updated_at": datetime.utcnow().isoformat(),
+    })
+
+    print(f"[RUNNER] ✅ Worker PID {proc.pid} started")
+
+    try:
+        while True:
+            if proc.poll() is not None:
+                print("[RUNNER] ❌ Worker exited")
+                write_state(state_file, {
+                    "pid": None,
+                    "updated_at": datetime.utcnow().isoformat(),
+                })
+                break
+            time.sleep(2)
+    except KeyboardInterrupt:
+        print("[RUNNER] ⛔ Runner interrupted")
+    finally:
+        pass
+
+
+if __name__ == "__main__":
+    main()
