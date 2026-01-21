@@ -3,7 +3,7 @@ import yaml
 import copy
 from pathlib import Path
 
-BASE_DIR = Path(os.environ.get("BASE_DIR_ENV", Path(__file__).resolve().parent.parent))
+BASE_DIR = Path(os.environ.get("BASE_DIR_ENV") or Path(__file__).resolve().parent.parent)
 SLOTS_DIR = BASE_DIR / "slots"
 SOURCE_SLOT = "slot01"
 TARGET_SLOTS = [f"slot{i:02d}" for i in range(2, 11)]
