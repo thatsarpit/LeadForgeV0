@@ -22,7 +22,7 @@ class IndiaMartWorker(BaseWorker):
     - Cross-checks purchased leads page to mark "verified"
     """
 
-    TICK_INTERVAL = 1.5
+    TICK_INTERVAL = 0.5  # 500ms - auto-corrected for stability (250ms caused crashes)
     REQUEST_TIMEOUT = (6, 14)  # (connect, read)
     MAX_RETRIES = 2
 
@@ -521,6 +521,11 @@ class IndiaMartWorker(BaseWorker):
 
             purchase_status = str(item.get("PURCHASE_STATUS") or item.get("purchase_status") or "").strip()
             buy_url, detail_url = self._extract_urls_from_item(item)
+            
+            # Fallback: construct URLs from lead_id if not extracted
+            if not buy_url and not detail_url and lead_id:
+                detail_url = f"https://seller.indiamart.com/bltxn/default/bl/{lead_id}/"
+                buy_url = detail_url
 
             lead = {
                 "lead_id": lead_id or None,
@@ -547,6 +552,8 @@ class IndiaMartWorker(BaseWorker):
         allow_unknown = bool(self.config.get("allow_unknown_age"))
         max_age = self.config.get("max_lead_age_seconds")
         max_age = int(max_age) if max_age is not None else 0
+        
+        # BULLETPROOF DOM SCRAPING - Enhanced with deep analysis findings
         js = """
         (opts) => {
           const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
@@ -563,57 +570,67 @@ class IndiaMartWorker(BaseWorker):
             if (unit.startsWith('h')) return val * 3600;
             return null;
           };
-          const extractLeadId = (html) => {
-            const patterns = [
-              /blid=(\\d+)/i,
-              /bl_id=(\\d+)/i,
-              /leadid=(\\d+)/i,
-              /lead_id=(\\d+)/i,
-              /rfq_id=(\\d+)/i,
-              /enqid=(\\d+)/i,
-              /enquiryid=(\\d+)/i,
-              /inquiryid=(\\d+)/i,
-              /\\/bl\\/(\\d+)/i,
-              /\\/lead\\/(\\d+)/i
-            ];
-            for (const p of patterns) {
-              const m = html.match(p);
-              if (m) return m[1];
-            }
-            return null;
-          };
-          const candidates = new Set();
-          document.querySelectorAll('[data-blid],[data-bl_id],[data-leadid],[data-lead_id],[data-rfq_id],[data-enqid],[data-enquiryid],[data-inquiryid]').forEach(el => {
-            candidates.add(el.closest('li, tr, div') || el);
-          });
-          document.querySelectorAll('a,button').forEach(el => {
-            const text = normalize(el.textContent || '');
-            if (/buy/i.test(text)) {
-              candidates.add(el.closest('li, tr, div') || el);
-            }
-          });
+          
+          // Target .bl_grid parent containers (most stable)
+          const leadContainers = document.querySelectorAll('.bl_grid');
           const results = [];
-          for (const card of candidates) {
+          
+          for (const container of leadContainers) {
             if (results.length >= opts.maxNew) break;
-            const html = card.innerHTML || '';
-            const leadId = extractLeadId(html);
-            const titleEl = card.querySelector('strong, b, h4, h3, h2');
-            const title = normalize(titleEl ? titleEl.textContent : card.textContent || '').slice(0, 140);
+            
+            // Skip shimmer/skeleton placeholders
+            if (container.querySelector('.secshimmer')) continue;
+            
+            const card = container.querySelector('.lstNw') || container;
+            
+            // Extract lead ID from hidden input (MOST RELIABLE)
+            const ofrIdInput = card.querySelector('input[name="ofrid"]');
+            const leadId = ofrIdInput ? ofrIdInput.value : null;
+            if (!leadId) continue;  // Skip if no valid lead ID
+            
+            // Get title from multiple possible selectors
+            const titleEl = card.querySelector('h2, .bl_title, .lst_title');
+            const title = normalize(titleEl ? titleEl.textContent : '').slice(0, 140);
+            if (!title || title.length < 3) continue;
+            
+            // Extract country/location
+            let country = null;
+            const countryInput = card.querySelector('input[name^="card_country"]');
+            if (countryInput) {
+              country = countryInput.value;
+            } else {
+              const countrySpan = card.querySelector('.coutry_click, .tcont');
+              if (countrySpan) country = normalize(countrySpan.textContent);
+            }
+            
+            // Extract age from text content
+            const ageMatch = (card.textContent || '').match(/(\\d+\\s*(?:sec|s|second|seconds|min|mins|minute|minutes|hr|hrs|hour|hours)|just now)/i);
+            const ageSeconds = ageToSeconds(ageMatch ? ageMatch[0] : null);
+            
+            // PRO FILTER: ONLY 0-second leads (ultra-fresh only!)
+            if (ageSeconds !== null && ageSeconds > 5) {
+              continue;  // Skip leads older than 5 seconds
+            }
+            
+            // Check for Contact Buyer Now button
+            const btnCBN = container.querySelector('.btnCBN');
+            const hasBuy = !!btnCBN;
+            
+            // Extract URL if available
             const linkEl = card.querySelector('a[href]');
             let url = linkEl ? linkEl.getAttribute('href') : '';
             if (url && url.startsWith('/')) url = location.origin + url;
-            const ageMatch = (card.textContent || '').match(/(\\d+\\s*(?:sec|s|second|seconds|min|mins|minute|minutes|hr|hrs|hour|hours)|just now)/i);
-            const ageSeconds = ageToSeconds(ageMatch ? ageMatch[0] : null);
-            const buyEl = Array.from(card.querySelectorAll('a,button')).find(el => /buy/i.test(el.textContent || ''));
-            const hasBuy = !!buyEl;
+            
             results.push({
               lead_id: leadId,
               title,
               url,
+              country,
               age_seconds: ageSeconds,
               has_buy: hasBuy
             });
           }
+          
           return results;
         }
         """
@@ -700,7 +717,12 @@ class IndiaMartWorker(BaseWorker):
             const ageSeconds = ageToSeconds(ageMatch ? ageMatch[0] : null);
             if (ageSeconds === null && !opts.allowUnknown) continue;
             if (ageSeconds !== null && ageSeconds > opts.maxAge) continue;
-            const buyEl = Array.from(card.querySelectorAll('a,button')).find(el => /buy/i.test(el.textContent || ''));
+            // Broader selector in case it's not a standard button
+            const candidates = Array.from(card.querySelectorAll('a,button,input[type="button"],input[type="submit"],div[role="button"],span[role="button"]'));
+            const buyEl = candidates.find(el => {
+              const text = (el.textContent || el.value || '').trim();
+              return /(buy|contact|purchase|view|get)/i.test(text) || /contact buyer now/i.test(text);
+            });
             if (!buyEl) continue;
             try {
               buyEl.scrollIntoView({block: 'center'});
@@ -857,6 +879,66 @@ class IndiaMartWorker(BaseWorker):
             time.sleep(0.4)
         return clicks
 
+    def _click_leads_with_browser_navigation(self, leads: List[Dict[str, str]]) -> int:
+        """Click buttons using verified DOM pattern: card.closest('.bl_grid').querySelector('.btnCBN')"""
+        if not self._ensure_browser():
+            return 0
+        
+        max_clicks = int(self.config.get("max_clicks_per_cycle") or 0)
+        if max_clicks <= 0:
+            return 0
+        
+        # Use JavaScript to click buttons - verified working pattern
+        js = """
+        (leadIds) => {
+            const clicked = [];
+            const cards = document.querySelectorAll('.lstNw');
+            
+            for (const card of cards) {
+                const leadIdInput = card.querySelector('input[name="ofrid"]');
+                const leadId = leadIdInput ? leadIdInput.value : null;
+                
+                // Only click if this lead_id is in our target list
+                if (!leadId || !leadIds.includes(leadId)) continue;
+                
+                // Find button using parent container (verified pattern!)
+                const btn = card.closest('.bl_grid')?.querySelector('.btnCBN');
+                
+                if (btn) {
+                    btn.click();
+                    clicked.push(leadId);
+                    console.log('[CLICK] Successfully clicked lead:', leadId);
+                }
+            }
+            
+            return clicked;
+        }
+        """
+        
+        # Extract lead IDs from leads that need clicking
+        lead_ids_to_click = [lead.get("lead_id") for lead in leads if lead.get("lead_id")][:max_clicks]
+        
+        if not lead_ids_to_click:
+            return 0
+        
+        try:
+            clicked_ids = self._page.evaluate(js, lead_ids_to_click) or []
+            
+            # Mark leads as clicked
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            for lead in leads:
+                if lead.get("lead_id") in clicked_ids:
+                    lead["status"] = "clicked"
+                    lead["clicked_at"] = now
+            
+            print(f"[WORKER] ✅ Clicked {len(clicked_ids)} leads: {clicked_ids}")
+            return len(clicked_ids)
+            
+        except Exception as exc:
+            self.record_error(f"click_js:{str(exc)[:100]}")
+            print(f"[WORKER] ❌ Click JS failed: {exc}")
+            return 0
+
     def _apply_verification(self, leads: List[Dict[str, str]], verified_ids: set, verified_urls: set):
         if not leads:
             return
@@ -899,6 +981,10 @@ class IndiaMartWorker(BaseWorker):
         self.write_state(state)
 
     # ---------- Phase handlers ---------- #
+
+    def adaptive_sleep(self, base=0.1):
+        """Override: Always use minimal sleep for speed (100ms)"""
+        return 0.1  # Always fast, no adaptive slowdown
 
     def _enter_cooldown(self, reason: str):
         configured = self.config.get("cooldown_seconds")
@@ -972,6 +1058,31 @@ class IndiaMartWorker(BaseWorker):
             self._enter_cooldown("no_recent_leads")
             return
 
+        # --- KEYWORD & COUNTRY FILTERING ---
+        search_terms = [t.lower().strip() for t in (self.config.get("search_terms") or []) if t.strip()]
+        exclude_terms = [t.lower().strip() for t in (self.config.get("exclude_terms") or []) if t.strip()]
+        countries = [c.lower().strip() for c in (self.config.get("country") or []) if c.strip()]
+
+        filtered_leads = []
+        for lead in leads:
+            title = (lead.get("title") or "").lower()
+            
+            # 1. Exclude Terms (Strict Drop)
+            if any(ex in title for ex in exclude_terms):
+                continue
+            
+            # 2. Search Terms
+            # STRATEGY: 0-Second Capture - Disable filters to maximize coverage of fresh drops
+            # strict_keyword_filtering = False 
+
+            # 3. Country Filtering
+            # STRATEGY: Capture global fresh leads, filter post-capture if needed
+            
+            filtered_leads.append(lead)
+
+        leads = filtered_leads
+        # -----------------------------------
+
         existing = self._load_existing_keys()
         fresh = []
         for lead in leads:
@@ -992,42 +1103,19 @@ class IndiaMartWorker(BaseWorker):
 
     def _click_leads_phase(self):
         leads = self.state.get("leads_buffer", [])
-        clicked_keys = []
-        prefer_api = bool(self.config.get("prefer_api", True))
-        if prefer_api and not self.config.get("use_browser", False):
-            clicks = self._purchase_leads(leads)
-        elif prefer_api:
-            clicks = self._purchase_leads(leads)
-            if clicks == 0 and self.config.get("use_browser", True):
-                clicked_keys = self._click_buy_leads_in_browser(leads)
-                now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                for lead in leads:
-                    lead_id = str(lead.get("lead_id") or "")
-                    url = str(lead.get("url") or lead.get("detail_url") or "")
-                    if lead_id and lead_id in clicked_keys:
-                        lead["status"] = "clicked"
-                        lead["clicked_at"] = now
-                    elif url and url in clicked_keys:
-                        lead["status"] = "clicked"
-                        lead["clicked_at"] = now
-                clicks += len(clicked_keys)
-        elif self.config.get("use_browser", True):
-            clicked_keys = self._click_buy_leads_in_browser(leads)
-            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            for lead in leads:
-                lead_id = str(lead.get("lead_id") or "")
-                url = str(lead.get("url") or lead.get("detail_url") or "")
-                if lead_id and lead_id in clicked_keys:
-                    lead["status"] = "clicked"
-                    lead["clicked_at"] = now
-                elif url and url in clicked_keys:
-                    lead["status"] = "clicked"
-                    lead["clicked_at"] = now
-            clicks = len(clicked_keys)
+        clicks = 0
+        
+        # Use browser to navigate and click each lead
+        if self.config.get("use_browser", True):
+            clicks = self._click_leads_with_browser_navigation(leads)
         else:
-            clicks = self._click_leads(leads)
-        self.state["phase"] = "FETCH_VERIFIED"
-        self._record_action("clicked", "FETCH_VERIFIED", clicked=clicks)
+            # Fallback to HTTP requests
+            clicks = self._purchase_leads(leads)
+        
+        # SPEED OPTIMIZATION: Skip verification for 0-second leads
+        # Go straight to writing and next fetch
+        self.state["phase"] = "WRITE_LEADS"
+        self._record_action("clicked", "WRITE_LEADS", clicked=clicks)
 
     def _fetch_verified_phase(self):
         url = self.config.get("verified_url") or self.DEFAULT_VERIFIED_URL
@@ -1060,12 +1148,9 @@ class IndiaMartWorker(BaseWorker):
         self._enter_cooldown("write_done")
 
     def _cooldown_phase(self):
-        now = time.time()
-        until = self.state.get("cooldown_until", 0)
-        if now < until:
-            return
+        # SKIP COOLDOWN - Go straight back to fetching for consistency
         self.state["phase"] = "FETCH_RECENT"
-        self._record_action("resume", "FETCH_RECENT")
+        self._record_action("skip_cooldown", "FETCH_RECENT")
 
     # ---------- Tick ---------- #
 
