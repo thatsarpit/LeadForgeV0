@@ -23,11 +23,15 @@ cloudflared tunnel login
 echo "🛠️ Creating Tunnel..."
 cloudflared tunnel create engyne-mini || echo "Tunnel already exists (ignoring error)"
 
+# Find the credentials file (it has a random UUID name)
+CRED_FILE=$(find ~/.cloudflared -name "*.json" | head -n 1)
+echo "🔍 Found credentials file: $CRED_FILE"
+
 # Create config file
 mkdir -p ~/.cloudflared
 cat > ~/.cloudflared/config.yml <<EOF
 tunnel: engyne-mini
-credentials-file: /Users/$USER/.cloudflared/cert.json
+credentials-file: $CRED_FILE
 
 ingress:
   - hostname: app.engyne.space
