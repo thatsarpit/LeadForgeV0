@@ -38,7 +38,12 @@ services:
       ALLOWED_ORIGINS: "https://app.engyne.space,https://api.engyne.space,http://localhost:5173,http://localhost:8001"
       GOOGLE_OAUTH_REDIRECT_BASE: "https://api.engyne.space"
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID}
+      ALLOWED_ORIGINS: "https://app.engyne.space,https://api.engyne.space,http://localhost:5173,http://localhost:8001"
+      GOOGLE_OAUTH_REDIRECT_BASE: "https://api.engyne.space"
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET}
+      REMOTE_LOGIN_ENABLED: ${REMOTE_LOGIN_ENABLED:-true}
+      REMOTE_LOGIN_PUBLIC_BASE: ${REMOTE_LOGIN_PUBLIC_BASE:-https://api.engyne.space}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
