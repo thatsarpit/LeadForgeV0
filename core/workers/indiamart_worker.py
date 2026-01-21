@@ -49,6 +49,10 @@ class IndiaMartWorker(BaseWorker):
         r"data-[a-z0-9_-]*(?:bl|lead|rfq|enq)[a-z0-9_-]*=[\"']([0-9]+)[\"']",
         re.IGNORECASE,
     )
+    
+    # Patterns for Past Transactions page (phone/email for matching)
+    PHONE_PATTERN = re.compile(r"\+(\d[\d\-\s]{7,15}\d)", re.IGNORECASE)
+    EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+", re.IGNORECASE)
 
     ANCHOR_PATTERN = re.compile(
         r"<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
@@ -949,13 +953,47 @@ class IndiaMartWorker(BaseWorker):
         return leads
 
     def _parse_verified(self, html: str) -> Tuple[set, set]:
+        """
+        Parse Past Transactions page to find verified leads.
+        
+        Returns: (verified_ids, verified_contacts)
+        - verified_ids: set of lead IDs (if found via patterns)
+        - verified_contacts: set of (phone, email) tuples from purchased leads
+        
+        Strategy: Past Transactions page is a React SPA that doesn't expose
+        lead IDs in DOM. We extract buyer phone/email for matching instead.
+        """
+        # Try standard ID patterns first (may catch some)
         ids = set(self._extract_ids(html or ""))
+        
+        # Also extract phone/email from ConLead_cont cards for matching
+        verified_contacts = set()
+        
+        # Parse ConLead_cont sections for buyer details
+        # Pattern: each card contains Mobile: xxx and Email: xxx
+        for phone_match in self.PHONE_PATTERN.finditer(html or ""):
+            phone = phone_match.group(0).strip()
+            if phone and len(phone) > 8:
+                verified_contacts.add(("phone", phone))
+        
+        for email_match in self.EMAIL_PATTERN.finditer(html or ""):
+            email = email_match.group(0).strip().lower()
+            if email and "@" in email and "." in email:
+                verified_contacts.add(("email", email))
+        
+        # Legacy URL extraction (may not be useful for this page)
         urls = set()
         for match in self.ANCHOR_PATTERN.finditer(html or ""):
             href = match.group(1) or ""
             if not self._looks_like_lead_link(href):
                 continue
             urls.add(self._normalize_url(href))
+        
+        # Store contacts for later matching
+        self.state["verified_contacts"] = list(verified_contacts)
+        
+        print(f"[WORKER] Verification parsed: {len(ids)} IDs, {len(verified_contacts)} contacts")
+        
         return ids, urls
 
     def _click_leads(self, leads: List[Dict[str, str]]) -> int:
@@ -1129,17 +1167,62 @@ class IndiaMartWorker(BaseWorker):
             return 0
 
     def _apply_verification(self, leads: List[Dict[str, str]], verified_ids: set, verified_urls: set):
+        """
+        Mark leads as verified using multiple matching strategies:
+        1. Match by lead_id (if found in Past Transactions page)
+        2. Match by URL (legacy)
+        3. Match by phone/email (new - for React SPA compatibility)
+        """
         if not leads:
             return
+        
+        # Get verified contacts from state (set by _parse_verified)
+        verified_contacts = set(tuple(c) for c in self.state.get("verified_contacts", []))
+        verified_phones = {c[1] for c in verified_contacts if c[0] == "phone"}
+        verified_emails = {c[1].lower() for c in verified_contacts if c[0] == "email"}
+        
+        verified_count = 0
+        
         for lead in leads:
             lead_id = str(lead.get("lead_id") or "").strip()
             url = str(lead.get("detail_url") or lead.get("url") or "").strip()
+            
+            # Get lead's contact info
+            lead_phone = str(lead.get("mobile") or lead.get("phone") or "").strip()
+            lead_email = str(lead.get("email") or "").strip().lower()
+            
+            is_verified = False
+            
+            # Strategy 1: Match by lead_id
             if lead_id and lead_id in verified_ids:
-                lead["status"] = "verified"
-                lead["verified_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                is_verified = True
+            
+            # Strategy 2: Match by URL
             elif url and url in verified_urls:
+                is_verified = True
+            
+            # Strategy 3: Match by phone (partial match for format variations)
+            elif lead_phone and len(lead_phone) > 6:
+                for vp in verified_phones:
+                    # Strip all non-digits and compare last 8 digits
+                    clean_lead = ''.join(c for c in lead_phone if c.isdigit())
+                    clean_verified = ''.join(c for c in vp if c.isdigit())
+                    if len(clean_lead) >= 8 and len(clean_verified) >= 8:
+                        if clean_lead[-8:] == clean_verified[-8:]:
+                            is_verified = True
+                            break
+            
+            # Strategy 4: Match by email
+            elif lead_email and lead_email in verified_emails:
+                is_verified = True
+            
+            if is_verified:
                 lead["status"] = "verified"
                 lead["verified_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                verified_count += 1
+        
+        if verified_count > 0:
+            print(f"[WORKER] Verified {verified_count} leads via matching")
 
     def _persist_leads(self, leads: List[Dict[str, str]]):
         if not leads:
