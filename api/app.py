@@ -23,7 +23,6 @@ import yaml
 
 from api.db import SessionLocal, get_db
 from api.models import DemoCode, Slot, User, UserEmail, UserSlot
-from api.models import DemoCode, Slot, User, UserEmail, UserSlot
 from api.utils.email import send_bulk_email
 from core.db.database import get_connection
 

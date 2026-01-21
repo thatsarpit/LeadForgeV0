@@ -44,6 +44,7 @@ def init_db():
                     status TEXT,
                     fetched_at DATETIME,
                     clicked_at DATETIME,
+                    verified_at DATETIME,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     raw_data JSON
                 );

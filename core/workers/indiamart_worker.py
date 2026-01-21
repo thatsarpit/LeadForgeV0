@@ -1150,12 +1150,9 @@ class IndiaMartWorker(BaseWorker):
         # Save to SQLite
         for lead in leads:
             lead_key = self._lead_key(lead)
-            # Ensure we have a lead_id if possible
+            # Skip leads without ID to avoid primary key constraint errors
             if not lead.get("lead_id"):
-                 # Skip leads without ID for DB safety or generate a hash-based ID?
-                 # For now, skipping to avoid primary key constraint fail if we pass None.
-                 # Actually save_lead_to_db handles checks.
-                 pass
+                 continue
 
             payload = {
                 **lead,
