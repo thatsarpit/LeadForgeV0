@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+*.egg-info/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build artifacts
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Logs
+logs/
+*.log
+
+# Runtime data (will be mounted as volumes)
+data/
+runtime/
+backups/
+slots/**/heartbeat.json
+slots/**/slot_state.json
+slots/**/browser_state.json
+browser_profiles/
+whatsapp_profiles/
+
+# Development
+.env
+.env.*
+!.env.example
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Testing
+tests/
+*.test.js
+*.spec.py
+
+# Artifacts
+.antigravity/
+.gemini/

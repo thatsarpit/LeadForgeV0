@@ -12,7 +12,7 @@ import uuid
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 import jwt
 import requests
 from dotenv import load_dotenv
@@ -28,21 +28,36 @@ from core.db.database import get_connection
 
 load_dotenv()
 
+# Environment validation
+AUTH_SECRET = os.getenv("AUTH_SECRET", "").strip()
+if not AUTH_SECRET or AUTH_SECRET == "engyne_dev_secret":
+    if os.getenv("NODE_ENV") == "production":
+        raise RuntimeError(
+            "AUTH_SECRET must be set to a strong secret in production. "
+            "Generate one with: openssl rand -hex 32"
+        )
+    print("⚠️  WARNING: Using default AUTH_SECRET. Set a secure secret in production!")
+    AUTH_SECRET = "engyne_dev_secret"
+
 app = FastAPI(title="Engyne API", version="1.2")
+
+# CORS Configuration - strict for production
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").strip()
+if ALLOWED_ORIGINS:
+    origins_list = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
+else:
+    # Development defaults
+    origins_list = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8001",
+    ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "https://app.engyne.space",
-        "https://api.engyne.space",
-        "http://engyne.test:5173",
-        "http://engyne.local:5173",
-    ],
-    allow_origin_regex="http://.*",
+    allow_origins=origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["*"],
 )
 
@@ -50,7 +65,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SLOTS_DIR = BASE_DIR / "slots"
 ENGINE_DIR = BASE_DIR / "core" / "engine"
 
-AUTH_SECRET = os.getenv("AUTH_SECRET", "engyne_dev_secret")
+# AUTH_SECRET already validated above
 AUTH_ALGO = "HS256"
 TOKEN_TTL_HOURS = int(os.getenv("TOKEN_TTL_HOURS", "24"))
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "thatsarpitg@gmail.com").strip().lower()
@@ -178,6 +193,62 @@ def read_leads(slot_id: str, limit: int = 200) -> list[dict]:
     # Return in chronological order (Oldest -> Newest) to match legacy file behavior
     # (Frontend reverses this to show Newest -> Oldest)
     return leads[::-1]
+
+
+# ---------- Health Checks ----------
+
+@app.get("/health")
+async def health_check():
+    """
+    Simple health check - returns OK if service is running.
+    Used by Docker HEALTHCHECK and load balancers.
+    """
+    return {
+        "status": "ok",
+        "service": "leadforge-api",
+        "version": "1.2",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+@app.get("/health/ready")
+async def readiness_check(db: Session = Depends(get_db)):
+    """
+    Readiness check - validates dependencies are accessible.
+    Returns 503 if not ready to serve traffic.
+    """
+    checks = {"status": "ready", "checks": {}}
+    
+    # Check database connectivity
+    try:
+        db.execute("SELECT 1")
+        checks["checks"]["database"] = "ok"
+    except Exception as e:
+        checks["status"] = "not_ready"
+        checks["checks"]["database"] = f"error: {str(e)[:100]}"
+    
+    # Check slots directory
+    try:
+        if SLOTS_DIR.exists():
+            checks["checks"]["slots_dir"] = "ok"
+        else:
+            checks["checks"]["slots_dir"] = "missing"
+    except Exception as e:
+        checks["checks"]["slots_dir"] = f"error: {str(e)[:100]}"
+    
+    # Check leads database (SQLite/Postgres)
+    try:
+        conn = get_connection()
+        conn.execute("SELECT COUNT(*) FROM leads LIMIT 1")
+        conn.close()
+        checks["checks"]["leads_db"] = "ok"
+    except Exception as e:
+        checks["checks"]["leads_db"] = f"error: {str(e)[:100]}"
+    
+    # Return 503 if any check failed
+    if checks["status"] != "ready":
+        return JSONResponse(status_code=503, content=checks)
+    
+    return checks
 
 
 # ---------- Remote Login ----------

@@ -1,0 +1,66 @@
+version: '3.8'
+
+# Production overrides for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up
+
+services:
+  postgres:
+    # In production, use Cloud SQL instead
+    # This service should not be deployed
+    deploy:
+      replicas: 0
+
+  api:
+    image: gcr.io/${GCP_PROJECT}/leadforge-api:${VERSION:-latest}
+    build:
+      cache_from:
+        - gcr.io/${GCP_PROJECT}/leadforge-api:latest
+    environment:
+      # Production uses external Postgres (Cloud SQL)
+      DATABASE_URL: ${DATABASE_URL}
+      AUTH_SECRET: ${AUTH_SECRET} # From Secret Manager
+      NODE_ENV: production
+      # Logging
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    restart: always
+    # Production health check
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8001/health/ready" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  manager:
+    image: gcr.io/${GCP_PROJECT}/leadforge-manager:${VERSION:-latest}
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+    restart: always
+
+  frontend:
+    image: gcr.io/${GCP_PROJECT}/leadforge-frontend:${VERSION:-latest}
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    restart: always
