@@ -4,7 +4,8 @@ FROM node:18-alpine AS frontend-builder
 
 WORKDIR /app/dashboards/client
 COPY dashboards/client/package*.json ./
-RUN npm ci --only=production
+# Install all dependencies (including dev) for build
+RUN npm ci
 
 COPY dashboards/client ./
 RUN npm run build
