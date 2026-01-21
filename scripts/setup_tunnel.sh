@@ -36,6 +36,8 @@ credentials-file: $CRED_FILE
 ingress:
   - hostname: app.engyne.space
     service: http://localhost:5173
+    originRequest:
+      httpHostHeader: "localhost"
   - hostname: api.engyne.space
     service: https://localhost:8001
     originRequest:
