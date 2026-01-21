@@ -51,8 +51,8 @@ echo "✅ Docker environment cleaned"
 
 echo "📥 [3/6] Pulling/Building latest code..."
 # Ensure we are on main branch and up to date
-git checkout main
-git pull origin main
+git checkout feature/coderabbit-security-audit
+git pull origin feature/coderabbit-security-audit
 
 # Rebuild images fresh
 docker-compose build --no-cache
@@ -75,7 +75,7 @@ else
 fi
 
 echo "Checking Frontend..."
-if curl -s http://localhost:5173/ | grep "Engyne Control"; then
+if curl -s http://localhost:5173/ | grep "LeadForge"; then
      echo "✅ Frontend is Served"
 else
      echo "❌ Frontend Check Failed"
