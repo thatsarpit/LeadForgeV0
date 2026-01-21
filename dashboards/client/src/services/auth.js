@@ -1,5 +1,5 @@
 const TOKEN_KEY = "lf_token";
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8001";
+const API_BASE = import.meta.env.VITE_API_BASE ?? `${window.location.protocol}//${window.location.hostname}:8001`;
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);

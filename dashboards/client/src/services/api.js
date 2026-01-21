@@ -2,7 +2,7 @@
 
 import { getToken } from "./auth";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8001";
+const API_BASE = import.meta.env.VITE_API_BASE ?? `${window.location.protocol}//${window.location.hostname}:8001`;
 
 /**
  * Generic helper for API calls
