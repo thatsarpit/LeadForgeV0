@@ -966,7 +966,7 @@ def update_onboarding(
 
 @app.get("/auth/google/start")
 @app.get("/api/auth/google/start")
-def google_start(redirect: Optional[str] = None):
+def google_start(request: Request, redirect: Optional[str] = None):
     if not _google_oauth_ready():
         raise HTTPException(status_code=503, detail="Google OAuth not configured")
 
@@ -984,9 +984,16 @@ def google_start(redirect: Optional[str] = None):
         algorithm=AUTH_ALGO,
     )
 
+    # Use request host if available and permitted, otherwise fallback to env
+    base_url = GOOGLE_OAUTH_REDIRECT_BASE
+    host = request.headers.get("host", "")
+    if "engyne.test" in host or "engyne.local" in host or "192.168." in host:
+        scheme = request.url.scheme or "http"
+        base_url = f"{scheme}://{host}"
+
     params = {
         "client_id": GOOGLE_OAUTH_CLIENT_ID,
-        "redirect_uri": f"{GOOGLE_OAUTH_REDIRECT_BASE}/auth/google/callback",
+        "redirect_uri": f"{base_url}/auth/google/callback",
         "response_type": "code",
         "scope": "openid email profile",
         "access_type": "offline",
