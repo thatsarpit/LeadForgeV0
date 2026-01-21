@@ -13,7 +13,7 @@ import {
   updateSlotConfig,
   updateSlotQuality,
 } from "../../services/api";
-import { COUNTRY_ALIAS_OVERRIDES, COUNTRY_OPTIONS } from "../../data/countries.js";
+import { COUNTRY_ALIAS_OVERRIDES, COUNTRY_OPTIONS } from "../../services/countries.js";
 
 const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
