@@ -35,6 +35,10 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-thatsarpitg@gmail.com}
       TOKEN_TTL_HOURS: 24
       PYTHONUNBUFFERED: 1
+      ALLOWED_ORIGINS: "https://app.engyne.space,https://api.engyne.space,http://localhost:5173,http://localhost:8001"
+      GOOGLE_OAUTH_REDIRECT_BASE: "https://api.engyne.space"
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
