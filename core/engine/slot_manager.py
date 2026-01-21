@@ -27,9 +27,15 @@ def acquire_pid_lock():
     if PID_FILE.exists():
         try:
             old_pid = int(PID_FILE.read_text())
-            os.kill(old_pid, 0)
-            print(f"[SLOT_MANAGER] ❌ Already running (PID {old_pid})")
-            sys.exit(1)
+            
+            # In Docker, we are likely PID 1. If the lock says PID 1, it's from a previous crashed crash run.
+            if old_pid == os.getpid():
+                print(f"[SLOT_MANAGER] ⚠️ Stale PID lock detected (Self-PID collision {old_pid}), recovering...")
+                PID_FILE.unlink()
+            else:
+                os.kill(old_pid, 0)
+                print(f"[SLOT_MANAGER] ❌ Already running (PID {old_pid})")
+                sys.exit(1)
         except OSError:
             print("[SLOT_MANAGER] ⚠️ Stale PID lock detected, recovering...")
             PID_FILE.unlink()
