@@ -107,7 +107,7 @@ class BaseWorker:
             metrics[k] = v
 
         state["metrics"] = metrics
-        state["updated_at"] = datetime.utcnow().isoformat()
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.write_state(state)
 
     def record_error(self, error_msg: str):
@@ -121,7 +121,7 @@ class BaseWorker:
         metrics["error_rate"] = round(metrics["errors"] / pages, 3)
 
         state["metrics"] = metrics
-        state["updated_at"] = datetime.utcnow().isoformat()
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.write_state(state)
 
     # ---------- Client limits ----------
@@ -227,7 +227,7 @@ class BaseWorker:
         if detail:
             state["stop_detail"] = detail
         state["last_command"] = "AUTO_STOP"
-        state["updated_at"] = datetime.utcnow().isoformat()
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.write_state(state)
         self._stop_requested = True
         self.running = False
@@ -249,7 +249,7 @@ class BaseWorker:
                 started_at = state.get("run_started_at") or state.get("started_at")
                 started_ts = self._parse_iso(started_at)
                 if started_ts:
-                    elapsed_min = (datetime.utcnow() - started_ts).total_seconds() / 60.0
+                    elapsed_min = (datetime.now(timezone.utc) - started_ts).total_seconds() / 60.0
                     if elapsed_min >= max_minutes:
                         self._request_stop("max_runtime_reached", f"{int(elapsed_min)} minutes")
                         return True
@@ -275,17 +275,17 @@ class BaseWorker:
         state = self.load_state()
         metrics = state.get("metrics", {})
         run_leads_start = int(metrics.get("leads_parsed") or 0)
-        run_started_at = datetime.utcnow().isoformat()
+        run_started_at = datetime.now(timezone.utc).isoformat()
         state.update({
             "status": "RUNNING",
             "busy": True,
-            "last_heartbeat": datetime.utcnow().isoformat(),
+            "last_heartbeat": datetime.now(timezone.utc).isoformat(),
             "started_at": state.get("started_at") or run_started_at,
             "run_started_at": run_started_at,
             "run_leads_start": run_leads_start,
             "stop_reason": None,
             "stop_detail": None,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         })
         self.write_state(state)
         self.init_metrics()
@@ -296,8 +296,8 @@ class BaseWorker:
         state.update({
             "status": "STOPPED",
             "busy": False,
-            "stopped_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "stopped_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         })
         self.write_state(state)
         print(f"[WORKER] STOPPED → {self.slot_dir.name}")
@@ -323,7 +323,7 @@ class BaseWorker:
         state["metrics"] = metrics
 
     def set_phase(self, phase_name: str):
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         state = self.load_state()
         metrics = state.get("metrics", {})
 
@@ -355,8 +355,8 @@ class BaseWorker:
         # update throughput before heartbeat
         self.update_throughput(state)
 
-        state["last_heartbeat"] = datetime.utcnow().isoformat()
-        state["updated_at"] = datetime.utcnow().isoformat()
+        state["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.write_state(state)
 
         self.last_heartbeat_ts = now

@@ -247,6 +247,10 @@ class IndiaMartWorker(BaseWorker):
     def _normalize_url(self, url: str) -> str:
         if not url:
             return ""
+        # Clean double-domain bug: //seller.indiamart.com//seller.indiamart.com/...
+        url = re.sub(r"^(https?:)?//seller\.indiamart\.com//", "https://seller.indiamart.com/", url)
+        # Also handle case where it appears mid-URL
+        url = re.sub(r"(https?://seller\.indiamart\.com)/+seller\.indiamart\.com/", r"\1/", url)
         if url.startswith("//"):
             return f"https:{url}"
         if url.startswith("http"):
@@ -487,7 +491,8 @@ class IndiaMartWorker(BaseWorker):
         max_new = max(int(self.config.get("max_new_per_cycle") or 0), 1)
         allow_unknown = bool(self.config.get("allow_unknown_age"))
         max_age = self.config.get("max_lead_age_seconds")
-        max_age = int(max_age) if max_age is not None else 0
+        # 0 or None means "no limit" - use 24 hours as effective max
+        max_age = int(max_age) if max_age else 86400
 
         leads: List[Dict[str, str]] = []
         for item in items:
@@ -551,7 +556,8 @@ class IndiaMartWorker(BaseWorker):
         max_new = max(int(self.config.get("max_new_per_cycle") or 0), 1)
         allow_unknown = bool(self.config.get("allow_unknown_age"))
         max_age = self.config.get("max_lead_age_seconds")
-        max_age = int(max_age) if max_age is not None else 0
+        # 0 or None means "no limit" - use 24 hours as effective max
+        max_age = int(max_age) if max_age else 86400
         
         # BULLETPROOF DOM SCRAPING - Enhanced with deep analysis findings
         js = """
@@ -607,9 +613,10 @@ class IndiaMartWorker(BaseWorker):
             const ageMatch = (card.textContent || '').match(/(\\d+\\s*(?:sec|s|second|seconds|min|mins|minute|minutes|hr|hrs|hour|hours)|just now)/i);
             const ageSeconds = ageToSeconds(ageMatch ? ageMatch[0] : null);
             
-            // PRO FILTER: ONLY 0-second leads (ultra-fresh only!)
-            if (ageSeconds !== null && ageSeconds > 5) {
-              continue;  // Skip leads older than 5 seconds
+            // PRO FILTER: Configurable age limit (0 means no limit = 86400)
+            const limit = opts.maxAge > 0 ? opts.maxAge : 86400;
+            if (ageSeconds !== null && ageSeconds > limit) {
+              continue;
             }
             
             // Check for Contact Buyer Now button
@@ -619,7 +626,17 @@ class IndiaMartWorker(BaseWorker):
             // Extract URL if available
             const linkEl = card.querySelector('a[href]');
             let url = linkEl ? linkEl.getAttribute('href') : '';
-            if (url && url.startsWith('/')) url = location.origin + url;
+            // Normalize URL - handle protocol-relative and relative paths
+            if (url) {
+              if (url.startsWith('//') && !url.startsWith('///')) {
+                url = 'https:' + url;
+              } else if (url.startsWith('/') && !url.startsWith('//')) {
+                url = location.origin + url;
+              }
+              // Clean double-domain bug
+              url = url.replace(/^(https?:)?\/\/seller\.indiamart\.com\/+seller\.indiamart\.com\//i, 'https://seller.indiamart.com/');
+              url = url.replace(/(https?:\/\/seller\.indiamart\.com)\/+seller\.indiamart\.com\//i, '$1/');
+            }
             
             results.push({
               lead_id: leadId,
@@ -855,6 +872,8 @@ class IndiaMartWorker(BaseWorker):
         clicks = 0
         allow_detail = bool(self.config.get("allow_detail_click", False))
         for lead in leads:
+            if lead.get("status") == "rejected":
+                continue
             if clicks >= max_clicks:
                 break
             target = lead.get("buy_url")
@@ -888,35 +907,86 @@ class IndiaMartWorker(BaseWorker):
         if max_clicks <= 0:
             return 0
         
-        # Use JavaScript to click buttons - verified working pattern
+        # Use JavaScript to click buttons - improved with multiple detection strategies
         js = """
         (leadIds) => {
             const clicked = [];
-            const cards = document.querySelectorAll('.lstNw');
             
-            for (const card of cards) {
-                const leadIdInput = card.querySelector('input[name="ofrid"]');
-                const leadId = leadIdInput ? leadIdInput.value : null;
+            for (const id of leadIds) {
+                let btn = null;
                 
-                // Only click if this lead_id is in our target list
-                if (!leadId || !leadIds.includes(leadId)) continue;
+                // Strategy 1: Find via hidden input with ofrid matching lead ID
+                const ofridInput = document.querySelector(`input[name="ofrid"][value="${id}"]`);
+                if (ofridInput) {
+                    // Found the hidden input, now find parent container and button
+                    let container = ofridInput.closest('.bl_grid') || ofridInput.closest('.lstNw');
+                    if (container) {
+                        btn = container.querySelector('.btnCBN') || 
+                              container.querySelector('a[class*="contact"], button[class*="contact"]') ||
+                              container.querySelector('a[class*="btn"], button');
+                    }
+                }
                 
-                // Find button using parent container (verified pattern!)
-                const btn = card.closest('.bl_grid')?.querySelector('.btnCBN');
+                // Strategy 2: Find via anchor with href containing the lead ID
+                if (!btn) {
+                    const anchor = document.querySelector(`a[href*="${id}"]`);
+                    if (anchor) {
+                        let el = anchor;
+                        // Traverse up the DOM tree (max 6 levels) to find the container
+                        for (let i = 0; i < 6 && !btn; i++) {
+                            if (!el.parentElement) break;
+                            el = el.parentElement;
+                            
+                            // Strategy 2a: Direct class match (most reliable)
+                            btn = el.querySelector('.btnCBN, .btn-contact, [class*="contact"][class*="btn"]');
+                            
+                            // Strategy 2b: Text match fallback
+                            if (!btn) {
+                                const candidates = Array.from(el.querySelectorAll('a, button, div[role="button"], span[role="button"]'));
+                                btn = candidates.find(b => {
+                                    const txt = (b.innerText || "").toLowerCase().trim();
+                                    return txt.includes("contact buyer") || txt === "buy now" || txt === "contact" || txt === "buy";
+                                });
+                            }
+                        }
+                    }
+                }
+                
+                // Strategy 3: Scan all .bl_grid containers for matching lead
+                if (!btn) {
+                    const allGrids = document.querySelectorAll('.bl_grid');
+                    for (const grid of allGrids) {
+                        const html = grid.innerHTML || "";
+                        if (html.includes(id)) {
+                            btn = grid.querySelector('.btnCBN') || grid.querySelector('a[class*="btn"]');
+                            if (btn) break;
+                        }
+                    }
+                }
                 
                 if (btn) {
-                    btn.click();
-                    clicked.push(leadId);
-                    console.log('[CLICK] Successfully clicked lead:', leadId);
+                    try {
+                        btn.scrollIntoView({block: 'center', behavior: 'instant'});
+                        btn.click();
+                        clicked.push(id);
+                        console.log('[CLICK] ✅ Successfully clicked lead:', id);
+                    } catch (e) {
+                        console.log('[CLICK] ❌ Click failed:', e);
+                    }
+                } else {
+                    console.log('[CLICK] ❌ Button not found for lead:', id);
                 }
             }
-            
             return clicked;
         }
         """
         
         # Extract lead IDs from leads that need clicking
-        lead_ids_to_click = [lead.get("lead_id") for lead in leads if lead.get("lead_id")][:max_clicks]
+        # Extract lead IDs from leads that need clicking (Skip rejected)
+        lead_ids_to_click = [
+            lead.get("lead_id") for lead in leads 
+            if lead.get("lead_id") and lead.get("status") != "rejected"
+        ][:max_clicks]
         
         if not lead_ids_to_click:
             return 0
@@ -1067,8 +1137,10 @@ class IndiaMartWorker(BaseWorker):
         for lead in leads:
             title = (lead.get("title") or "").lower()
             
-            # 1. Exclude Terms (Strict Drop)
+            # 1. Exclude Terms (Strict Drop -> Mark Rejected)
             if any(ex in title for ex in exclude_terms):
+                lead["status"] = "rejected"
+                filtered_leads.append(lead)
                 continue
             
             # 2. Search Terms
@@ -1105,6 +1177,15 @@ class IndiaMartWorker(BaseWorker):
         leads = self.state.get("leads_buffer", [])
         clicks = 0
         
+        # Refresh the recent leads page to ensure DOM is fresh before clicking
+        if self.config.get("use_browser", True) and self._ensure_browser():
+            try:
+                url = self.config.get("recent_url") or self.DEFAULT_RECENT_URL
+                self._page.goto(url, wait_until="domcontentloaded")
+                self._page.wait_for_timeout(1500)  # Wait for leads to fully render
+            except Exception as exc:
+                self.record_error(f"refresh_before_click:{str(exc)[:50]}")
+        
         # Use browser to navigate and click each lead
         if self.config.get("use_browser", True):
             clicks = self._click_leads_with_browser_navigation(leads)
@@ -1112,21 +1193,50 @@ class IndiaMartWorker(BaseWorker):
             # Fallback to HTTP requests
             clicks = self._purchase_leads(leads)
         
-        # SPEED OPTIMIZATION: Skip verification for 0-second leads
-        # Go straight to writing and next fetch
-        self.state["phase"] = "WRITE_LEADS"
-        self._record_action("clicked", "WRITE_LEADS", clicked=clicks)
+        # LOGIC: Only verify if we actually attempted a purchase (clicks > 0)
+        # This preserves speed when no leads are found/clicked.
+        if clicks > 0:
+            self.state["phase"] = "FETCH_VERIFIED"
+        else:
+            self.state["phase"] = "WRITE_LEADS"
+            
+        self._record_action("clicked", self.state["phase"], clicked=clicks)
 
     def _fetch_verified_phase(self):
         url = self.config.get("verified_url") or self.DEFAULT_VERIFIED_URL
-        html = self._render_page(url) if self.config.get("use_browser", True) else self._fetch_page(url)
+        html = None
+        
+        if self.config.get("use_browser", True) and self._ensure_browser():
+            # Use separate tab for verification to preserve main scanning page state
+            page = None
+            try:
+                print(f"[WORKER] Opening verification tab: {url}")
+                page = self._context.new_page()
+                page.goto(url, wait_until="domcontentloaded")
+                # Wait for potential update (User said delay is acceptable/needed)
+                page.wait_for_timeout(5000)
+                html = page.content()
+            except Exception as exc:
+                print(f"[WORKER] ❌ Verification Tab Failed: {exc}")
+                self.record_error(f"verify_tab_{str(exc)[:50]}")
+            finally:
+                if page:
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+        else:
+            html = self._fetch_page(url)
+
         if not html:
             self.state["verified_html"] = None
             self.state["phase"] = "WRITE_LEADS"
             self._record_action("verify_skip", "WRITE_LEADS")
             return
+
         if not self._page_logged_in(html):
             self.record_error("login_required")
+        
         self.state["verified_html"] = html
         self._snapshot_html("verified_snapshot", html)
         self.state["phase"] = "PARSE_VERIFIED"

@@ -3,7 +3,7 @@ import json
 import time
 import subprocess
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import sys
 import signal
 
@@ -67,7 +67,7 @@ def save_json(path, data):
     path.write_text(json.dumps(data, indent=2))
 
 def utcnow():
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', '')
 
 def is_process_running(pid):
     if not pid:
@@ -78,12 +78,33 @@ def is_process_running(pid):
     except Exception:
         return False
 
+# Track open log handles for cleanup
+_log_handles = {}
+
 def start_runner(slot_id):
+    global _log_handles
     print(f"[SLOT_MANAGER] ▶ Starting runner for {slot_id}")
+    log_path = SLOTS_DIR / slot_id / "runner.log"
+    
+    # Close any existing handle for this slot to prevent leaks
+    if slot_id in _log_handles:
+        try:
+            _log_handles[slot_id].close()
+        except Exception:
+            pass
+    
+    # Ensure directory exists
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Open with line buffering for immediate visibility
+    f = open(log_path, "a", buffering=1)
+    _log_handles[slot_id] = f
+    
     proc = subprocess.Popen(
         [PYTHON_BIN, str(RUNNER_PATH), slot_id],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stdout=f,
+        stderr=f,
+        start_new_session=True
     )
     return proc.pid
 
@@ -100,7 +121,10 @@ def within_startup_grace(state):
         return False
     try:
         started_ts = datetime.fromisoformat(started_at)
-        return (datetime.utcnow() - started_ts) < timedelta(seconds=STARTUP_GRACE_SECONDS)
+        # Make timezone-aware if needed
+        if started_ts.tzinfo is None:
+            started_ts = started_ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - started_ts) < timedelta(seconds=STARTUP_GRACE_SECONDS)
     except Exception:
         return True
 
@@ -220,15 +244,18 @@ while True:
 
             # ---------------- TRUTH ENFORCEMENT ---------------- #
 
-            if status == "RUNNING":
+            if status in ("RUNNING", "STARTING", "STOPPING"):
                 # --- STARTUP GRACE WINDOW ---
                 if within_startup_grace(state):
                     save_json(state_file, state)
                     continue
 
                 # --- PID CHECK ---
-                if pid and not is_process_running(pid):
-                    print(f"[SLOT_MANAGER] ❌ Dead PID detected for {slot_id}, marking STOPPED")
+                # If command is START or status is STARTING, we are about to start it
+                if command == "START" or status == "STARTING":
+                    pass
+                elif not pid or not is_process_running(pid):
+                    print(f"[SLOT_MANAGER] ❌ Dead/Missing PID for {slot_id} in {status}, marking STOPPED")
                     state.update({
                         "status": "STOPPED",
                         "pid": None,
@@ -240,14 +267,21 @@ while True:
                     continue
 
                 # --- HEARTBEAT CHECK ---
+                # (Same logic as before)
                 if not last_hb:
-                    # allow missing heartbeat AFTER grace, but do not kill immediately
+                    # allow missing heartbeat AFTER grace? strictness check
+                    if status == "RUNNING":
+                        # If running and NO heartbeat after grace -> Dead
+                        pass 
                     save_json(state_file, state)
                     continue
 
                 try:
                     last = datetime.fromisoformat(last_hb)
-                    if datetime.utcnow() - last > timedelta(seconds=HEARTBEAT_TIMEOUT):
+                    # Make timezone-aware if needed
+                    if last.tzinfo is None:
+                        last = last.replace(tzinfo=timezone.utc)
+                    if datetime.now(timezone.utc) - last > timedelta(seconds=HEARTBEAT_TIMEOUT):
                         print(f"[SLOT_MANAGER] 💀 Heartbeat timeout for {slot_id}")
                         if is_process_running(pid):
                             stop_runner(pid, slot_id)
@@ -266,7 +300,11 @@ while True:
 
             # ---------------- COMMAND HANDLING ---------------- #
 
-            if command == "START":
+            # Treat STARTING state (without PID) as implicit START command
+            # This fixes cases where API sets status but not command
+            force_start = (status == "STARTING" and not is_process_running(pid))
+            
+            if command == "START" or force_start:
                 if mode == "OBSERVER":
                     print(f"[SLOT_MANAGER] 👁️ Observer mode — cannot start {slot_id}")
                     state["command"] = None
