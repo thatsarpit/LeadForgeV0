@@ -1201,14 +1201,14 @@ class IndiaMartWorker(BaseWorker):
             elif url and url in verified_urls:
                 is_verified = True
             
-            # Strategy 3: Match by phone (partial match for format variations)
+            # Strategy 3: Match by phone (10-digit match for accuracy)
             elif lead_phone and len(lead_phone) > 6:
                 for vp in verified_phones:
-                    # Strip all non-digits and compare last 8 digits
+                    # Strip all non-digits and compare last 10 digits
                     clean_lead = ''.join(c for c in lead_phone if c.isdigit())
                     clean_verified = ''.join(c for c in vp if c.isdigit())
-                    if len(clean_lead) >= 8 and len(clean_verified) >= 8:
-                        if clean_lead[-8:] == clean_verified[-8:]:
+                    if len(clean_lead) >= 10 and len(clean_verified) >= 10:
+                        if clean_lead[-10:] == clean_verified[-10:]:
                             is_verified = True
                             break
             
