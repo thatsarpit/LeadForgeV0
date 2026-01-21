@@ -237,9 +237,11 @@ async def readiness_check(db: Session = Depends(get_db)):
     
     # Check leads database (SQLite/Postgres)
     try:
-        conn = get_connection()
-        conn.execute("SELECT COUNT(*) FROM leads LIMIT 1")
-        conn.close()
+        # DB dependency is already open and valid for the current backend
+        try:
+            db.execute(text("SELECT COUNT(*) FROM leads LIMIT 1"))
+        except TypeError: # Fallback for SQLite which doesn't accept text() objects
+            db.execute("SELECT COUNT(*) FROM leads LIMIT 1")
         checks["checks"]["leads_db"] = "ok"
     except Exception as e:
         checks["checks"]["leads_db"] = f"error: {str(e)[:100]}"
