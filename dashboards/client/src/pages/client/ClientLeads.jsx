@@ -35,7 +35,7 @@ export default function ClientLeads() {
           50
         );
         if (!alive) return;
-        setLeads(Array.isArray(data.leads) ? data.leads : []);
+        setLeads(Array.isArray(data.leads) ? data.leads.reverse() : []);
       } catch (err) {
         if (!alive) return;
         setLeadsError("Unable to load recent leads yet.");

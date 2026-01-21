@@ -23,7 +23,9 @@ import yaml
 
 from api.db import SessionLocal, get_db
 from api.models import DemoCode, Slot, User, UserEmail, UserSlot
+from api.models import DemoCode, Slot, User, UserEmail, UserSlot
 from api.utils.email import send_bulk_email
+from core.db.database import get_connection
 
 load_dotenv()
 
@@ -153,24 +155,30 @@ def save_slot_config(slot_id: str, config: dict):
 
 
 def read_leads(slot_id: str, limit: int = 200) -> list[dict]:
-    slot_dir = require_slot_dir(slot_id)
-    leads_path = slot_dir / "leads.jsonl"
-    if not leads_path.exists():
-        return []
+    # Ensure slot exists (optional validation)
+    require_slot_dir(slot_id)
+    
     limit = max(1, min(int(limit), 5000))
-    queue: deque[str] = deque(maxlen=limit)
-    with leads_path.open() as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                queue.append(line)
     leads = []
-    for line in queue:
-        try:
-            leads.append(json.loads(line))
-        except Exception:
-            continue
-    return leads
+    
+    conn = get_connection()
+    try:
+        # Fetch newest leads first
+        cursor = conn.execute(
+            "SELECT raw_data FROM leads WHERE slot_id = ? ORDER BY fetched_at DESC LIMIT ?", 
+            (slot_id, limit)
+        )
+        for row in cursor:
+            try:
+                leads.append(json.loads(row["raw_data"]))
+            except Exception:
+                continue
+    finally:
+        conn.close()
+        
+    # Return in chronological order (Oldest -> Newest) to match legacy file behavior
+    # (Frontend reverses this to show Newest -> Oldest)
+    return leads[::-1]
 
 
 # ---------- Remote Login ----------

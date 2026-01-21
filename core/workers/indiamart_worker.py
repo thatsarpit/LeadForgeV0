@@ -12,6 +12,7 @@ import yaml
 from requests.cookies import RequestsCookieJar
 
 from core.workers.base_worker import BaseWorker
+from core.db.database import init_db, save_lead_to_db, get_slot_lead_ids, mark_leads_as_verified
 
 
 class IndiaMartWorker(BaseWorker):
@@ -70,10 +71,17 @@ class IndiaMartWorker(BaseWorker):
             "last_action": None,
             "cooldown_until": 0.0,
             "leads_buffer": [],
+            "ticks_since_verify": 0,
             "recent_html": None,
             "recent_payload": None,
             "verified_html": None,
         }
+        
+        # Initialize DB on startup
+        try:
+            init_db()
+        except Exception as e:
+            self.record_error(f"db_init_err: {e}")
 
     # ---------- Config / Session ---------- #
 
@@ -304,26 +312,17 @@ class IndiaMartWorker(BaseWorker):
         digest = hashlib.sha1(json.dumps(lead, sort_keys=True).encode("utf-8")).hexdigest()
         return f"hash:{digest}"
 
-    def _load_existing_keys(self, max_lines: int = 2000) -> set:
-        leads_path = self.slot_dir / "leads.jsonl"
-        if not leads_path.exists():
+    def _load_existing_keys(self, max_lines: int = 5000) -> set:
+        """
+        Load existing lead IDs from SQLite to avoid duplicates.
+        Returns a set of 'id:XYZ' or equivalent keys.
+        """
+        try:
+            # We limit to last 5000 to keep memory low, but enough to avoid recent dupes
+            lead_ids = get_slot_lead_ids(self.slot_dir.name, limit=max_lines)
+            return {f"id:{lid}" for lid in lead_ids if lid}
+        except Exception:
             return set()
-        queue: deque[str] = deque(maxlen=max_lines)
-        with leads_path.open() as handle:
-            for line in handle:
-                line = line.strip()
-                if line:
-                    queue.append(line)
-        keys = set()
-        for line in queue:
-            try:
-                lead = json.loads(line)
-            except Exception:
-                continue
-            key = self._lead_key(lead)
-            if key:
-                keys.add(key)
-        return keys
 
     def _snapshot_html(self, name: str, html: str):
         if not self.config.get("debug_snapshot"):
@@ -1146,23 +1145,30 @@ class IndiaMartWorker(BaseWorker):
         if not leads:
             return
 
-        leads_path = self.slot_dir / "leads.jsonl"
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        lines = []
+        
+        # Save to SQLite
         for lead in leads:
             lead_key = self._lead_key(lead)
+            # Ensure we have a lead_id if possible
+            if not lead.get("lead_id"):
+                 # Skip leads without ID for DB safety or generate a hash-based ID?
+                 # For now, skipping to avoid primary key constraint fail if we pass None.
+                 # Actually save_lead_to_db handles checks.
+                 pass
+
             payload = {
                 **lead,
                 "lead_key": lead_key,
                 "slot_id": self.slot_dir.name,
                 "fetched_at": lead.get("fetched_at") or now,
             }
-            lines.append(json.dumps(payload))
+            try:
+                save_lead_to_db(payload, self.slot_dir.name)
+            except Exception as e:
+                self.record_error(f"db_save_err: {e}")
 
-        with open(leads_path, "a", encoding="utf-8") as handle:
-            for line in lines:
-                handle.write(line + "\n")
-
+        # Update Metrics
         state = self.load_state()
         metrics = state.get("metrics", {})
         metrics["leads_parsed"] = metrics.get("leads_parsed", 0) + len(leads)
@@ -1316,7 +1322,8 @@ class IndiaMartWorker(BaseWorker):
         # LOGIC: Only verify if we actually attempted a purchase (clicks > 0)
         # This preserves speed when no leads are found/clicked.
         if clicks > 0:
-            self.state["phase"] = "FETCH_VERIFIED"
+            # Force verify soon
+            self.state["ticks_since_verify"] = 1000
         else:
             self.state["phase"] = "WRITE_LEADS"
             
@@ -1366,8 +1373,18 @@ class IndiaMartWorker(BaseWorker):
         html = self.state.get("verified_html")
         verified_ids, verified_urls = self._parse_verified(html or "")
         self.state["verified_html"] = None
+        
+        # 1. Update in-memory buffer (legacy, for UI if needed immediately)
         leads = self.state.get("leads_buffer", [])
         self._apply_verification(leads, verified_ids, verified_urls)
+        
+        # 2. Bulk update DB (The Fix)
+        if verified_ids:
+             try:
+                 mark_leads_as_verified(self.slot_dir.name, verified_ids)
+             except Exception as e:
+                 self.record_error(f"db_verify_err: {e}")
+        
         self.state["phase"] = "WRITE_LEADS"
         self._record_action("verified_parsed", "WRITE_LEADS", verified=len(verified_ids))
 
@@ -1386,6 +1403,19 @@ class IndiaMartWorker(BaseWorker):
 
     def tick(self):
         self._maybe_reload_cookies()
+        
+        # Periodic verification logic (every ~30s)
+        # Only trigger if we are in a "stable" state like FETCH_RECENT
+        current_phase = self.state.get("phase")
+        ticks = self.state.get("ticks_since_verify", 0)
+        
+        if current_phase == "FETCH_RECENT" and ticks > 60:
+             self.state["phase"] = "FETCH_VERIFIED"
+             self.state["ticks_since_verify"] = 0
+             self._record_action("periodic_verify", "FETCH_VERIFIED")
+        else:
+             self.state["ticks_since_verify"] = ticks + 1
+
         phase = self.state.get("phase", "INIT")
         try:
             if phase == "INIT":
