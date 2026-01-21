@@ -42,7 +42,16 @@ def release_pid_lock():
         print("[SLOT_MANAGER] 🔓 PID lock released")
 
 def handle_shutdown(signum, frame):
+    global _log_handles
     print(f"[SLOT_MANAGER] ⚠️ Shutdown signal received ({signum})")
+    # Close all open log file handles to prevent descriptor leaks
+    for slot_id, handle in list(_log_handles.items()):
+        try:
+            handle.close()
+            print(f"[SLOT_MANAGER] 🔒 Closed log handle for {slot_id}")
+        except Exception as e:
+            print(f"[SLOT_MANAGER] ⚠️ Error closing handle for {slot_id}: {e}")
+    _log_handles.clear()
     release_pid_lock()
     sys.exit(0)
 
@@ -271,8 +280,14 @@ while True:
                 if not last_hb:
                     # allow missing heartbeat AFTER grace? strictness check
                     if status == "RUNNING":
-                        # If running and NO heartbeat after grace -> Dead
-                        pass 
+                        # If running and NO heartbeat after grace -> Mark as DEAD
+                        print(f"[SLOT_MANAGER] 💀 No heartbeat for running slot {slot_id}, marking DEAD")
+                        state.update({
+                            "status": "DEAD",
+                            "busy": False,
+                            "stop_reason": "no_heartbeat",
+                            "stopped_at": utcnow()
+                        })
                     save_json(state_file, state)
                     continue
 

@@ -1,0 +1,20 @@
+[
+    {
+        "name": "Example Client 1",
+        "email": "client1@example.com",
+        "slot_id": "slot01",
+        "keywords": [
+            "keyword1",
+            "keyword2"
+        ]
+    },
+    {
+        "name": "Example Client 2",
+        "email": "client2@example.com",
+        "slot_id": "slot02",
+        "keywords": [
+            "keyword3",
+            "keyword4"
+        ]
+    }
+]
