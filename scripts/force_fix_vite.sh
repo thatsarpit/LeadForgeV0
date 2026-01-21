@@ -18,11 +18,11 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    allowedHosts: true,
+    allowedHosts: ['app.engyne.space', 'localhost', '127.0.0.1'],
     host: true
   },
   preview: {
-    allowedHosts: true,
+    allowedHosts: ['app.engyne.space', 'localhost', '127.0.0.1'],
     host: true
   }
 })
