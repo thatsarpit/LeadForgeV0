@@ -22,10 +22,21 @@ wait_for_db() {
 run_migrations() {
     echo "[ENTRYPOINT] Running database migrations..."
     cd /app
-    # Initialize leads table if needed - fail fast on errors
-    if ! python3 -c "from core.db.database import init_db; init_db()"; then
-        echo "[ENTRYPOINT] ❌ Migration failed! Exiting..."
-        exit 1
+    
+    # Run Alembic migrations (handles both Postgres and SQLite if configured, but critical for Postgres)
+    if command -v alembic &> /dev/null; then
+        echo "[ENTRYPOINT] Running Alembic upgrade head..."
+        if ! alembic upgrade head; then
+            echo "[ENTRYPOINT] ❌ Alembic migration failed! Exiting..."
+            exit 1
+        fi
+    else
+        echo "[ENTRYPOINT] Alembic not found, falling back to legacy init_db..."
+        # Initialize leads table if needed - fail fast on errors
+        if ! python3 -c "from core.db.database import init_db; init_db()"; then
+            echo "[ENTRYPOINT] ❌ Migration failed! Exiting..."
+            exit 1
+        fi
     fi
     echo "[ENTRYPOINT] Migrations complete"
 }
