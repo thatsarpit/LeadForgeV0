@@ -1,9 +1,11 @@
 #!/bin/bash
 set -e
 
-# Define paths
-SOURCE_CONFIG="/Users/engyne/Documents/LeadForgeV0/config/cloudflared.yml"
-SOURCE_CERT="/Users/engyne/.cloudflared/cert.pem"
+# Determine project root dynamically
+PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SOURCE_CONFIG="$PROJECT_ROOT/config/cloudflared.yml"
+# We assume the cert is always in the user's home dir default location which is standard
+SOURCE_CERT="$HOME/.cloudflared/cert.pem"
 SYSTEM_CONFIG_DIR="/etc/cloudflared"
 SYSTEM_CONFIG="$SYSTEM_CONFIG_DIR/config.yml"
 SYSTEM_CERT="$SYSTEM_CONFIG_DIR/cert.pem"
