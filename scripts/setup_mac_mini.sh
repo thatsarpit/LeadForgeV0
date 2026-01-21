@@ -90,6 +90,9 @@ else
 fi
 
 # 6. Run Migrations / Provisioning
+echo "🏗️  Initializing Database Tables..."
+python scripts/init_db.py
+
 echo "🏗️  Provisioning Clients..."
 python scripts/provision_production_clients.py
 
