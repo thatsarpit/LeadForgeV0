@@ -2,18 +2,40 @@
 # cleanup_and_deploy_mac_mini.sh
 # Purpose: Clean up old processes/containers and deploy fresh LeadForge stack
 
-echo "🧹 [1/6] Stopping local processes..."
-# Kill any lingering PM2 processes
-if command -v pm2 &> /dev/null; then
-    pm2 delete all 2>/dev/null || echo "No PM2 processes to delete"
-    pm2 kill 2>/dev/null || echo "PM2 killed"
+echo "🧹 [1/6] Stopping local processes & freeing ports..."
+
+# 1. Kill specific ports (API, Frontend, Postgres)
+PORTS=(8001 5173 5432)
+for PORT in "${PORTS[@]}"; do
+    PID=$(lsof -ti:$PORT)
+    if [ ! -z "$PID" ]; then
+        echo "   Killing process on port $PORT (PID: $PID)..."
+        kill -9 $PID 2>/dev/null || echo "   Failed to kill $PID (might require sudo)"
+    else
+        echo "   Port $PORT is free"
+    fi
+done
+
+# 2. Kill Cloudflare Tunnels
+if pgrep -x "cloudflared" > /dev/null; then
+    echo "   Found Cloudflare Tunnel processes. Killing..."
+    pkill -f cloudflared
+    echo "   Cloudflare Tunnels stopped"
+else
+    echo "   No Cloudflare Tunnels running"
 fi
 
-# Kill any python/node processes related to LeadForge
+# 3. Kill lingering PM2 processes
+if command -v pm2 &> /dev/null; then
+    pm2 delete all 2>/dev/null || echo "   No PM2 processes to delete"
+    pm2 kill 2>/dev/null || echo "   PM2 killed"
+fi
+
+# 4. Kill any python/node processes related to LeadForge
 pkill -f "uvicorn api.app" 2>/dev/null
 pkill -f "slot_manager.py" 2>/dev/null
 pkill -f "vite" 2>/dev/null
-echo "✅ Local processes stopped"
+echo "✅ Local processes stopped & ports freed"
 
 echo "🐳 [2/6] Cleaning Docker environment..."
 # Stop all running containers
