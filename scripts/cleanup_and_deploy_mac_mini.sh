@@ -2,7 +2,19 @@
 # cleanup_and_deploy_mac_mini.sh
 # Purpose: Clean up old processes/containers and deploy fresh LeadForge stack
 
-echo "🧹 [1/6] Stopping local processes & freeing ports..."
+echo "🐳 [1/6] Cleaning Docker environment..."
+# Stop all running containers
+docker-compose down -v 2>/dev/null || echo "Docker compose down failed or nothing running"
+
+# Force kill any LeadForge containers if still running
+docker ps -q --filter "name=leadforge" | xargs -r docker rm -f
+
+# Prune old images/networks to free space and unwanted cache
+docker system prune -f
+docker volume prune -f
+echo "✅ Docker environment cleaned"
+
+echo "🧹 [2/6] Stopping local processes & freeing ports..."
 
 # 1. Kill specific ports (API, Frontend, Postgres)
 PORTS=(8001 5173 5432)
@@ -36,18 +48,6 @@ pkill -f "uvicorn api.app" 2>/dev/null
 pkill -f "slot_manager.py" 2>/dev/null
 pkill -f "vite" 2>/dev/null
 echo "✅ Local processes stopped & ports freed"
-
-echo "🐳 [2/6] Cleaning Docker environment..."
-# Stop all running containers
-docker-compose down -v 2>/dev/null || echo "Docker compose down failed or nothing running"
-
-# Force kill any LeadForge containers if still running
-docker ps -q --filter "name=leadforge" | xargs -r docker rm -f
-
-# Prune old images/networks to free space and unwanted cache
-docker system prune -f
-docker volume prune -f
-echo "✅ Docker environment cleaned"
 
 echo "📥 [3/6] Pulling/Building latest code..."
 # Ensure we are on main branch and up to date
