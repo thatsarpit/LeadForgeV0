@@ -494,6 +494,8 @@ class IndiaMartWorker(BaseWorker):
         # 0 or None means "no limit" - use 24 hours as effective max
         max_age = int(max_age) if max_age else 86400
 
+        allowed_countries = set(c.lower() for c in (self.config.get("country") or []))
+
         leads: List[Dict[str, str]] = []
         for item in items:
             if not isinstance(item, dict):
@@ -523,6 +525,28 @@ class IndiaMartWorker(BaseWorker):
                 continue
             if age_seconds is not None and age_seconds > max_age:
                 continue
+
+            # Country Filter (API)
+            if allowed_countries:
+                msg_country = str(
+                    item.get("S_COUNTRY") 
+                    or item.get("GLUSR_USR_COUNTRYNAME") 
+                    or item.get("SENDER_COUNTRY")
+                    or item.get("ISO")
+                    or ""
+                ).strip().lower()
+                
+                # If we found a country code/name, check it. 
+                # If we didn't find one, we typically allow it (safe fail) or block it. 
+                # Let's check if the item contains ANY country data.
+                if msg_country:
+                     # Check against allow list (which contains lowercased names & codes)
+                     # We might need fuzzy matching, but direct check is a good start.
+                     # Example: "United States" vs "us" vs "usa"
+                     # Our config has "us", "usa", "united states", etc.
+                     if msg_country not in allowed_countries:
+                         continue
+
 
             purchase_status = str(item.get("PURCHASE_STATUS") or item.get("purchase_status") or "").strip()
             buy_url, detail_url = self._extract_urls_from_item(item)
@@ -558,6 +582,8 @@ class IndiaMartWorker(BaseWorker):
         max_age = self.config.get("max_lead_age_seconds")
         # 0 or None means "no limit" - use 24 hours as effective max
         max_age = int(max_age) if max_age else 86400
+        
+        allowed_countries = [c.lower() for c in (self.config.get("country") or [])]
         
         # BULLETPROOF DOM SCRAPING - Enhanced with deep analysis findings
         js = """
@@ -600,14 +626,8 @@ class IndiaMartWorker(BaseWorker):
             if (!title || title.length < 3) continue;
             
             // Extract country/location
-            let country = null;
-            const countryInput = card.querySelector('input[name^="card_country"]');
-            if (countryInput) {
-              country = countryInput.value;
-            } else {
-              const countrySpan = card.querySelector('.coutry_click, .tcont');
-              if (countrySpan) country = normalize(countrySpan.textContent);
-            }
+            // (Moved down to be after title extraction but before filtering)
+            // (Refactored into main flow)
             
             // Extract age from text content
             const ageMatch = (card.textContent || '').match(/(\\d+\\s*(?:sec|s|second|seconds|min|mins|minute|minutes|hr|hrs|hour|hours)|just now)/i);
@@ -619,6 +639,24 @@ class IndiaMartWorker(BaseWorker):
               continue;
             }
             
+            // Country Filter
+            let country = null;
+            const countryInput = card.querySelector('input[name^="card_country"]');
+            if (countryInput) {
+              country = countryInput.value;
+            } else {
+              const countrySpan = card.querySelector('.coutry_click, .tcont');
+              if (countrySpan) country = normalize(countrySpan.textContent);
+            }
+            
+            if (opts.allowedCountries && opts.allowedCountries.length > 0) {
+                if (country) {
+                    const cLower = country.toLowerCase();
+                    const match = opts.allowedCountries.some(ac => cLower === ac || cLower.includes(ac) || ac.includes(cLower));
+                    if (!match) continue;
+                }
+            }
+
             // Check for Contact Buyer Now button
             const btnCBN = container.querySelector('.btnCBN');
             const hasBuy = !!btnCBN;
@@ -656,6 +694,7 @@ class IndiaMartWorker(BaseWorker):
                 "maxNew": max_new,
                 "allowUnknown": allow_unknown,
                 "maxAge": max_age,
+                "allowedCountries": allowed_countries,
             }) or []
             filtered = []
             for lead in leads:
@@ -679,6 +718,8 @@ class IndiaMartWorker(BaseWorker):
         max_age = self.config.get("max_lead_age_seconds")
         max_age = int(max_age) if max_age is not None else 0
         allow_unknown = bool(self.config.get("allow_unknown_age"))
+        allowed_countries = [c.lower() for c in (self.config.get("country") or [])]
+        
         js = """
         (opts) => {
           const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
@@ -741,6 +782,25 @@ class IndiaMartWorker(BaseWorker):
               return /(buy|contact|purchase|view|get)/i.test(text) || /contact buyer now/i.test(text);
             });
             if (!buyEl) continue;
+
+            // Country Filter (Clicking)
+            if (opts.allowedCountries && opts.allowedCountries.length > 0) {
+                let country = null;
+                const countryInput = card.querySelector('input[name^="card_country"]');
+                if (countryInput) {
+                  country = countryInput.value;
+                } else {
+                  const countrySpan = card.querySelector('.coutry_click, .tcont');
+                  if (countrySpan) country = normalize(countrySpan.textContent);
+                }
+                
+                if (country) {
+                    const cLower = country.toLowerCase();
+                    const match = opts.allowedCountries.some(ac => cLower === ac || cLower.includes(ac) || ac.includes(cLower));
+                    if (!match) continue;
+                }
+            }
+
             try {
               buyEl.scrollIntoView({block: 'center'});
               buyEl.click();
@@ -758,6 +818,7 @@ class IndiaMartWorker(BaseWorker):
                 "maxClicks": max_clicks,
                 "maxAge": max_age,
                 "allowUnknown": allow_unknown,
+                "allowedCountries": allowed_countries,
             }) or []
         except Exception as exc:
             self.record_error(str(exc)[:200])
