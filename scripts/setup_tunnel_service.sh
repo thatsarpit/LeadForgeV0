@@ -55,14 +55,19 @@ sudo chmod 600 "$SYSTEM_CRED"
 
 # 6. Install and Start Service
 echo "Installing launchd service..."
-# Note: running without arguments causes it to default to /etc/cloudflared/config.yml
-# Running WITH an argument causes it to try and parse it as a token (which fails)
+sudo cloudflared service uninstall || true
 sudo cloudflared service install
 
-echo "Starting service..."
-# Force load if valid
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.cloudflare.cloudflared.plist 2>/dev/null || sudo launchctl load /Library/LaunchDaemons/com.cloudflare.cloudflared.plist
+echo "🛠️  Fixing broken plist arguments..."
+PLIST_PATH="/Library/LaunchDaemons/com.cloudflare.cloudflared.plist"
+# cloudflared service install often leaves ProgramArguments empty. Let's fix it.
+sudo plutil -replace ProgramArguments -xml "<array><string>/opt/homebrew/bin/cloudflared</string><string>--config</string><string>$SYSTEM_CONFIG</string><string>tunnel</string><string>run</string></array>" "$PLIST_PATH"
 
-echo "✅ Success! Cloudflare Tunnel is now a system service."
+echo "Starting service..."
+sudo launchctl bootout system "$PLIST_PATH" 2>/dev/null || true
+sudo launchctl bootstrap system "$PLIST_PATH"
+sudo launchctl kickstart -kp system/com.cloudflare.cloudflared
+
+echo "✅ Success! Cloudflare Tunnel is now a system service with correct arguments."
 echo "   It will auto-start on power on."
 echo "   Config location: $SYSTEM_CONFIG"
