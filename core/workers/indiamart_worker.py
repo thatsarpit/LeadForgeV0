@@ -527,7 +527,6 @@ class IndiaMartWorker(BaseWorker):
                 continue
 
             # Country Filter (API)
-            # Country Filter (API)
             if allowed_countries:
                 msg_country = str(
                     item.get("S_COUNTRY") 
