@@ -57,13 +57,12 @@ case "${1:-api}" in
     
     frontend)
         echo "[ENTRYPOINT] Starting Frontend..."
-        cd /app/dashboards/client
-        if [ -d "dist" ]; then
-            echo "[ENTRYPOINT] Serving pre-built frontend on port 5173..."
-            cd dist
-            exec python3 -m http.server 5173
+        cd /app/dashboards/client/dist
+        if [ -f "index.html" ]; then
+            echo "[ENTRYPOINT] Serving SPA on port 5173..."
+            exec python3 /app/scripts/spa_server.py
         else
-            echo "[ENTRYPOINT] ❌ Frontend dist/ not found!"
+            echo "[ENTRYPOINT] ❌ Frontend index.html not found!"
             exit 1
         fi
         ;;
