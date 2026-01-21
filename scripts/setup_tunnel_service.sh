@@ -5,9 +5,9 @@ set -e
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SOURCE_CONFIG="$PROJECT_ROOT/config/cloudflared.yml"
 
-# Find the Tunnel Credentials JSON file (not cert.pem)
-# We look for a JSON file that looks like a UUID
-TUNNEL_CRED_SRC=$(find "$HOME/.cloudflared" -name "*.json" -maxdepth 1 | head -n 1)
+# Find the NEWEST Tunnel Credentials JSON file
+# We use ls -t to sort by modification time (newest first)
+TUNNEL_CRED_SRC=$(ls -tp "$HOME/.cloudflared/"*.json | grep -v /$ | head -n 1)
 
 if [ -z "$TUNNEL_CRED_SRC" ]; then
     echo "❌ Error: No Tunnel Credentials JSON found in $HOME/.cloudflared/"
@@ -15,7 +15,11 @@ if [ -z "$TUNNEL_CRED_SRC" ]; then
     exit 1
 fi
 
-echo "Found credentials file: $TUNNEL_CRED_SRC"
+# Extract UUID from filename (e.g., path/to/UUID.json -> UUID)
+TUNNEL_UUID=$(basename "$TUNNEL_CRED_SRC" .json)
+
+echo "Found newest credentials file: $TUNNEL_CRED_SRC"
+echo "Tunnel UUID: $TUNNEL_UUID"
 
 SYSTEM_CONFIG_DIR="/etc/cloudflared"
 SYSTEM_CONFIG="$SYSTEM_CONFIG_DIR/config.yml"
@@ -36,10 +40,11 @@ echo "Copying configuration and credentials to $SYSTEM_CONFIG_DIR..."
 sudo cp "$SOURCE_CONFIG" "$SYSTEM_CONFIG"
 sudo cp "$TUNNEL_CRED_SRC" "$SYSTEM_CRED"
 
-# 4. Update Config to point to System Credentials
+# 4. Update Config to point to System Credentials & UUID
 # Replace the old credentials path with the new system path in the config file
-echo "Updating credential path in system config..."
+echo "Updating credential path and UUID in system config..."
 sudo sed -i '' "s|credentials-file: .*|credentials-file: $SYSTEM_CRED|g" "$SYSTEM_CONFIG"
+sudo sed -i '' "s|tunnel: .*|tunnel: $TUNNEL_UUID|g" "$SYSTEM_CONFIG"
 
 # 5. Fix Permissions (Root only)
 echo "Securing file permissions..."
