@@ -1007,7 +1007,7 @@ def google_start(request: Request, redirect: Optional[str] = None):
 
 @app.get("/auth/google/callback")
 @app.get("/api/auth/google/callback")
-def google_callback(code: Optional[str] = None, state: Optional[str] = None, db: Session = Depends(get_db)):
+def google_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None, db: Session = Depends(get_db)):
     if not _google_oauth_ready():
         raise HTTPException(status_code=503, detail="Google OAuth not configured")
     if not code or not state:
@@ -1023,13 +1023,20 @@ def google_callback(code: Optional[str] = None, state: Optional[str] = None, db:
         raise HTTPException(status_code=400, detail="Invalid redirect")
     redirect_url = _append_query(redirect_url, {"ts": int(time.time())})
 
+    # Use request host if available and permitted, otherwise fallback to env
+    base_url = GOOGLE_OAUTH_REDIRECT_BASE
+    host = request.headers.get("host", "")
+    if "engyne.test" in host or "engyne.local" in host or "192.168." in host:
+        scheme = request.url.scheme or "http"
+        base_url = f"{scheme}://{host}"
+
     token_res = requests.post(
         "https://oauth2.googleapis.com/token",
         data={
             "code": code,
             "client_id": GOOGLE_OAUTH_CLIENT_ID,
             "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
-            "redirect_uri": f"{GOOGLE_OAUTH_REDIRECT_BASE}/auth/google/callback",
+            "redirect_uri": f"{base_url}/auth/google/callback",
             "grant_type": "authorization_code",
         },
         timeout=10,
