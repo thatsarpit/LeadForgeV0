@@ -67,14 +67,21 @@ def provision():
             else:
                 logger.info(f"User {email} exists.")
 
-            # 2. Grant Slot Permission
+            # 2a. Ensure Slot Exists
+            slot = db.scalar(select(Slot).where(Slot.id == slot_id))
+            if not slot:
+                logger.info(f"Creating slot {slot_id}")
+                slot = Slot(id=slot_id, label=name, created_at=datetime.utcnow(), updated_at=datetime.utcnow())
+                db.add(slot)
+                db.commit()
+
+            # 2b. Grant Slot Permission
             user_slot = db.scalar(select(UserSlot).where(UserSlot.user_id == user.id, UserSlot.slot_id == slot_id))
             if not user_slot:
                 logger.info(f"Granting slot {slot_id} to {email}")
                 user_slot = UserSlot(
                     user_id=user.id,
                     slot_id=slot_id,
-                    role="owner",
                     created_at=datetime.utcnow()
                 )
                 db.add(user_slot)
