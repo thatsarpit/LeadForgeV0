@@ -72,7 +72,6 @@ def provision():
             if not user_slot:
                 logger.info(f"Granting slot {slot_id} to {email}")
                 user_slot = UserSlot(
-                    id=uuid.uuid4(),
                     user_id=user.id,
                     slot_id=slot_id,
                     role="owner",
