@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Stre
 import jwt
 import requests
 from dotenv import load_dotenv
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 from typing import Optional
 import yaml
@@ -220,7 +220,7 @@ async def readiness_check(db: Session = Depends(get_db)):
     
     # Check database connectivity
     try:
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         checks["checks"]["database"] = "ok"
     except Exception as e:
         checks["status"] = "not_ready"
