@@ -7,18 +7,10 @@ import path from 'path';
 export default defineConfig({
   plugins: [react()],
   server: {
-    https: {
-      key: fs.readFileSync(path.resolve(__dirname, '../../certs/server.key')),
-      cert: fs.readFileSync(path.resolve(__dirname, '../../certs/server.crt')),
-    },
     host: true,
   },
   preview: {
-    allowedHosts: true,
-    https: {
-      key: fs.readFileSync(path.resolve(__dirname, '../../certs/server.key')),
-      cert: fs.readFileSync(path.resolve(__dirname, '../../certs/server.crt')),
-    },
+    allowedHosts: ['app.engyne.space', 'localhost', '127.0.0.1'],
     host: true,
   },
 })
