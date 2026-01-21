@@ -22,8 +22,11 @@ wait_for_db() {
 run_migrations() {
     echo "[ENTRYPOINT] Running database migrations..."
     cd /app
-    # Initialize leads table if needed
-    python3 -c "from core.db.database import init_db; init_db()" || true
+    # Initialize leads table if needed - fail fast on errors
+    if ! python3 -c "from core.db.database import init_db; init_db()"; then
+        echo "[ENTRYPOINT] ❌ Migration failed! Exiting..."
+        exit 1
+    fi
     echo "[ENTRYPOINT] Migrations complete"
 }
 
@@ -69,6 +72,7 @@ case "${1:-api}" in
         # For future worker-specific containers
         echo "[ENTRYPOINT] Starting Worker..."
         wait_for_db
+        shift  # Remove 'worker' from $@
         exec python3 -m core.workers.indiamart_worker "$@"
         ;;
     

@@ -40,7 +40,10 @@ AUTH_SECRET=$AUTH_SECRET
 DB_PASSWORD=$DB_PASSWORD
 
 # Database URL (update host/port as needed)
-DATABASE_URL=postgresql+psycopg://leadforge:$DB_PASSWORD@localhost:5432/leadforge
+# For Docker: use 'postgres' (service name)
+# For local dev: use 'localhost'
+DATABASE_URL=postgresql+psycopg://leadforge:$DB_PASSWORD@postgres:5432/leadforge
+# DATABASE_URL=postgresql+psycopg://leadforge:$DB_PASSWORD@localhost:5432/leadforge  # Uncomment for local dev
 
 # Application config
 TOKEN_TTL_HOURS=24
