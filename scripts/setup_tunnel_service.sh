@@ -55,7 +55,9 @@ sudo chmod 600 "$SYSTEM_CRED"
 
 # 6. Install and Start Service
 echo "Installing launchd service..."
-sudo cloudflared service install "$SYSTEM_CONFIG"
+# Note: running without arguments causes it to default to /etc/cloudflared/config.yml
+# Running WITH an argument causes it to try and parse it as a token (which fails)
+sudo cloudflared service install
 
 echo "Starting service..."
 # Force load if valid
