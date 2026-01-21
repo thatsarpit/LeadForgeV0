@@ -13,7 +13,7 @@ import {
   updateSlotConfig,
   updateSlotQuality,
 } from "../../services/api";
-import { COUNTRY_ALIAS_OVERRIDES, COUNTRY_OPTIONS } from "../../data/countries";
+import { COUNTRY_ALIAS_OVERRIDES, COUNTRY_OPTIONS } from "../../data/countries.js";
 
 const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -213,13 +213,13 @@ export default function ClientSlots() {
       const keywords = Array.isArray(config.search_terms)
         ? config.search_terms.join("\n")
         : typeof config.search_terms === "string"
-        ? config.search_terms
-        : "";
+          ? config.search_terms
+          : "";
       const exclusions = Array.isArray(config.exclude_terms)
         ? config.exclude_terms.join("\n")
         : typeof config.exclude_terms === "string"
-        ? config.exclude_terms
-        : "";
+          ? config.exclude_terms
+          : "";
 
       setFormState({
         leadTargetEnabled,
@@ -553,9 +553,8 @@ export default function ClientSlots() {
               </div>
               <div className="engyne-card-helper">
                 {selectedSlot
-                  ? `${selectedSlot.node_name || selectedSlot.node_id || "local"} - ${
-                      selectedSlot.status || "-"
-                    }`
+                  ? `${selectedSlot.node_name || selectedSlot.node_id || "local"} - ${selectedSlot.status || "-"
+                  }`
                   : "Choose a slot to view controls."}
               </div>
             </div>
