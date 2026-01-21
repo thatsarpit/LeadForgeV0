@@ -7,6 +7,7 @@ import path from 'path';
 export default defineConfig({
   plugins: [react()],
   server: {
+    allowedHosts: ['app.engyne.space', 'localhost', '127.0.0.1'],
     host: true,
   },
   preview: {
