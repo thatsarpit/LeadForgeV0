@@ -527,6 +527,7 @@ class IndiaMartWorker(BaseWorker):
                 continue
 
             # Country Filter (API)
+            # Country Filter (API)
             if allowed_countries:
                 msg_country = str(
                     item.get("S_COUNTRY") 
@@ -536,15 +537,39 @@ class IndiaMartWorker(BaseWorker):
                     or ""
                 ).strip().lower()
                 
-                # If we found a country code/name, check it. 
-                # If we didn't find one, we typically allow it (safe fail) or block it. 
-                # Let's check if the item contains ANY country data.
                 if msg_country:
-                     # Check against allow list (which contains lowercased names & codes)
-                     # We might need fuzzy matching, but direct check is a good start.
-                     # Example: "United States" vs "us" vs "usa"
-                     # Our config has "us", "usa", "united states", etc.
-                     if msg_country not in allowed_countries:
+                     # Strict matching strategy:
+                     # 1. Normalize both sides
+                     # 2. Split item country into tokens (words)
+                     # 3. Match if any allowed country (normalized) equals a token 
+                     #    OR if allowed country is substring of token (for longer matches) 
+                     #    BUT treat short codes (<=3 chars) as exact matches only.
+                     
+                     # Check if ANY allowed country matches this item's country string
+                     match_found = False
+                     country_tokens = set(re.split(r'\W+', msg_country))
+                     
+                     for allowed in allowed_countries:
+                         allowed = allowed.strip().lower()
+                         if not allowed:
+                             continue
+                             
+                         # Strategy:
+                         # If allowed is short (<=3), require exact token match (e.g. 'us', 'usa', 'gb')
+                         # If allowed is long, allow if it matches a token OR is contained in msg_country
+                         
+                         if len(allowed) <= 3:
+                             if allowed in country_tokens:
+                                 match_found = True
+                                 break
+                         else:
+                             # For longer names (e.g. "germany"), match if it appears in the string
+                             # boundary check using token set or direct substring if sufficiently long
+                             if allowed in msg_country:
+                                 match_found = True
+                                 break
+                                 
+                     if not match_found:
                          continue
 
 
@@ -651,8 +676,43 @@ class IndiaMartWorker(BaseWorker):
             
             if (opts.allowedCountries && opts.allowedCountries.length > 0) {
                 if (country) {
-                    const cLower = country.toLowerCase();
-                    const match = opts.allowedCountries.some(ac => cLower === ac || cLower.includes(ac) || ac.includes(cLower));
+                    const cLower = country.toLowerCase().trim();
+                    const cTokens = cLower.split(/[\W_]+/).filter(Boolean);
+                    
+                    const match = opts.allowedCountries.some(ac => {
+                        const allowed = (ac || '').trim().toLowerCase();
+                        if (!allowed) return false;
+                        
+                        // Strict rules:
+                        // 1. If allowed is short (<=3 chars), require EXACT match with a token
+                        //    Prevents "in" (India) matching "germany" (contains 'in'?? no) 
+                        //    Actually prevents "in" matching "indiana" or similar if we were loose.
+                        //    Mainly prevents "us" matching "australia"?? No.
+                        //    Prevents "in" matching "india" if "in" is not a separate token.
+                        
+                        if (allowed.length <= 3) {
+                            return cTokens.includes(allowed);
+                        }
+                        
+                        // 2. If allowed is longer, standard "includes" is safer but still risky if word boundary not respected.
+                        //    Better: match if allowed appears as a word or is a significant substring.
+                        //    Let's use token matching or whole-string containment if it makes sense.
+                        //    Actually, simple "includes" is okay for long words like "germany" or "united states".
+                        //    But to be safe, let's require word boundaries or direct token match.
+                        
+                        // Check if 'allowed' appears as a substring in the full country string
+                        // BUT check boundaries? 
+                        // Let's stick to the prompt: "match by whole-word boundaries... or splitting... tokens"
+                        
+                        // Option A: token match
+                        if (cTokens.includes(allowed)) return true;
+                        
+                        // Option B: multi-word match (e.g. "united states")
+                        // "united states" might be tokens ["united", "states"]
+                        // so cLower.includes(allowed) is better for multi-word allowed countries
+                        return cLower.includes(allowed);
+                    });
+                    
                     if (!match) continue;
                 }
             }
