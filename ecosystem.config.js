@@ -2,13 +2,12 @@ module.exports = {
     apps: [
         {
             name: "leadforge-api",
-            script: "api/app.py",
-            interpreter: "python3",
-            args: "",
+            script: "venv/bin/uvicorn",
+            args: "api.app:app --host 0.0.0.0 --port 8001",
+            interpreter: "none",
             cwd: ".",
             watch: false,
             env: {
-                PORT: 8001,
                 PYTHONPATH: "."
             }
         },
@@ -25,7 +24,7 @@ module.exports = {
         {
             name: "leadforge-frontend",
             script: "npm",
-            args: "run preview -- --port 5173",
+            args: "run preview -- --port 5173 --host",
             cwd: "./dashboards/client",
             watch: false,
             env: {
