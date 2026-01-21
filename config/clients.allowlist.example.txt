@@ -1,0 +1,4 @@
+# One email per line (production clients)
+# Example:
+# client1@example.com
+# client2@example.com

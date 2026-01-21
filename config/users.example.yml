@@ -1,0 +1,10 @@
+- username: thatsarpitg@gmail.com
+  role: admin
+  allowed_slots: []
+  google_email: thatsarpitg@gmail.com
+
+- username: client@example.com
+  role: client
+  allowed_slots:
+    - slot_001
+  google_email: client@example.com

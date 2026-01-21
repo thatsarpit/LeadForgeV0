@@ -1,0 +1,4 @@
+# One email per line (clients to remove)
+# Example:
+# test1@example.com
+# demo2@example.com

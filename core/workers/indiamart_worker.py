@@ -1,54 +1,98 @@
+import hashlib
 import json
+import re
 import sys
 import time
+from collections import deque
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests
 import yaml
+from requests.cookies import RequestsCookieJar
 
 from core.workers.base_worker import BaseWorker
 
 
 class IndiaMartWorker(BaseWorker):
     """
-    IndiaMart Worker — Phase 1 real scraper scaffold
-    - Maintains existing lifecycle/heartbeat guarantees from BaseWorker
-    - Adds sessioned HTTP fetch with timeouts + bounded retries
-    - Non-blocking phases: fetch → parse → persist → cooldown
+    IndiaMart Seller Portal worker
+    - Polls recent leads page for new items
+    - Opens lead detail links to mark "clicked"
+    - Cross-checks purchased leads page to mark "verified"
     """
 
     TICK_INTERVAL = 1.5
-    REQUEST_TIMEOUT = (6, 12)  # (connect, read)
+    REQUEST_TIMEOUT = (6, 14)  # (connect, read)
     MAX_RETRIES = 2
-    MAX_LEADS_PER_PAGE = 25
+
+    BASE_DIR = Path(__file__).resolve().parents[2]
+    DEFAULT_RECENT_URL = "https://seller.indiamart.com/bltxn/?pref=recent"
+    DEFAULT_VERIFIED_URL = "https://seller.indiamart.com/blproduct/mypurchasedbl?disp=D"
+    DEFAULT_RECENT_API_URL = "https://seller.indiamart.com/bltxn/default/BringFirstFoldOfBLOnRelevant/"
+
+    ID_PATTERNS = [
+        re.compile(r"blid=([0-9]+)", re.IGNORECASE),
+        re.compile(r"bl_id=([0-9]+)", re.IGNORECASE),
+        re.compile(r"rfq_id=([0-9]+)", re.IGNORECASE),
+        re.compile(r"leadid=([0-9]+)", re.IGNORECASE),
+        re.compile(r"lead_id=([0-9]+)", re.IGNORECASE),
+        re.compile(r"enqid=([0-9]+)", re.IGNORECASE),
+        re.compile(r"enquiryid=([0-9]+)", re.IGNORECASE),
+        re.compile(r"inquiryid=([0-9]+)", re.IGNORECASE),
+        re.compile(r"/bl/([0-9]+)", re.IGNORECASE),
+        re.compile(r"/lead/([0-9]+)", re.IGNORECASE),
+    ]
+
+    DATA_ID_PATTERN = re.compile(
+        r"data-[a-z0-9_-]*(?:bl|lead|rfq|enq)[a-z0-9_-]*=[\"']([0-9]+)[\"']",
+        re.IGNORECASE,
+    )
+
+    ANCHOR_PATTERN = re.compile(
+        r"<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+        re.IGNORECASE | re.DOTALL,
+    )
 
     def __init__(self, slot_dir: Path):
         super().__init__(slot_dir)
 
         self.config = self._load_config()
         self.session = self._build_session()
+        self._playwright = None
+        self._context = None
+        self._page = None
+        self._playwright_missing = False
+        self._cookie_mtime = 0.0
 
         self.state = {
             "phase": "INIT",
             "last_action": None,
-            "error_count": 0,
-            "leads_buffer": [],
             "cooldown_until": 0.0,
-            "current_term_idx": 0,
-            "current_page": 1,
+            "leads_buffer": [],
+            "recent_html": None,
+            "recent_payload": None,
+            "verified_html": None,
         }
-
-        self.page_html: Optional[str] = None
 
     # ---------- Config / Session ---------- #
 
     def _load_config(self) -> dict:
         cfg_file = self.slot_dir / "slot_config.yml"
         defaults = {
-            "search_terms": ["pharma exporters"],
-            "max_pages_per_term": 1,
-            "country": None,
+            "recent_url": self.DEFAULT_RECENT_URL,
+            "recent_api_url": self.DEFAULT_RECENT_API_URL,
+            "verified_url": self.DEFAULT_VERIFIED_URL,
+            "use_browser": True,
+            "prefer_api": True,
+            "allow_detail_click": False,
+            "max_new_per_cycle": 20,
+            "max_clicks_per_cycle": 6,
+            "max_lead_age_seconds": 0,
+            "allow_unknown_age": False,
+            "render_wait_ms": 1500,
+            "cooldown_seconds": None,
+            "debug_snapshot": False,
         }
 
         if not cfg_file.exists() or cfg_file.stat().st_size == 0:
@@ -65,10 +109,6 @@ class IndiaMartWorker(BaseWorker):
             return defaults
 
     def _load_cookies(self) -> Dict[str, str]:
-        """
-        Best-effort cookie loader; session.enc is expected to be JSON (plain).
-        If parsing fails, we continue unauthenticated.
-        """
         cookie_path = self.slot_dir / "session.enc"
         if not cookie_path.exists() or cookie_path.stat().st_size == 0:
             return {}
@@ -87,6 +127,18 @@ class IndiaMartWorker(BaseWorker):
             pass
         return {}
 
+    def _load_cookie_list(self) -> List[dict]:
+        cookie_path = self.slot_dir / "session.enc"
+        if not cookie_path.exists() or cookie_path.stat().st_size == 0:
+            return []
+        try:
+            cookies = json.loads(cookie_path.read_text())
+            if isinstance(cookies, list):
+                return [c for c in cookies if isinstance(c, dict)]
+        except Exception:
+            pass
+        return []
+
     def _build_session(self) -> requests.Session:
         session = requests.Session()
         session.headers.update({
@@ -97,41 +149,580 @@ class IndiaMartWorker(BaseWorker):
             ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://seller.indiamart.com/",
         })
+
+        cookie_list = self._load_cookie_list()
+        if cookie_list:
+            self._apply_cookie_list_to_session(session, cookie_list)
+            return session
 
         cookies = self._load_cookies()
         if cookies:
             session.cookies.update(cookies)
         return session
 
+    def _apply_cookie_list_to_session(self, session: requests.Session, cookies: List[dict]) -> bool:
+        if not cookies:
+            return False
+        jar = RequestsCookieJar()
+        for cookie in cookies:
+            if not isinstance(cookie, dict):
+                continue
+            name = cookie.get("name")
+            value = cookie.get("value")
+            if not name:
+                continue
+            params = {}
+            domain = cookie.get("domain")
+            path = cookie.get("path")
+            if domain:
+                params["domain"] = domain
+            if path:
+                params["path"] = path
+            if "secure" in cookie:
+                params["secure"] = bool(cookie.get("secure"))
+            expires = cookie.get("expires")
+            if isinstance(expires, (int, float)) and expires > 0:
+                params["expires"] = int(expires)
+            http_only = cookie.get("httpOnly")
+            if http_only is not None:
+                params["rest"] = {"HttpOnly": bool(http_only)}
+            jar.set(name, str(value or ""), **params)
+        session.cookies.clear()
+        session.cookies.update(jar)
+        return True
+
+    def _maybe_reload_cookies(self):
+        cookie_path = self.slot_dir / "session.enc"
+        if not cookie_path.exists():
+            return
+        mtime = cookie_path.stat().st_mtime
+        if mtime <= self._cookie_mtime:
+            return
+        cookie_list = self._load_cookie_list()
+        if cookie_list:
+            if self._apply_cookie_list_to_session(self.session, cookie_list):
+                self._cookie_mtime = mtime
+
+    def _refresh_cookies_from_browser(self) -> bool:
+        if not self._ensure_browser():
+            return False
+        try:
+            try:
+                target = self.config.get("recent_url") or self.DEFAULT_RECENT_URL
+                self._page.goto(target, wait_until="domcontentloaded")
+                if not self._page_logged_in(self._page.content()):
+                    return False
+            except Exception:
+                return False
+            cookies = self._context.cookies()
+            filtered = [
+                c
+                for c in cookies
+                if "indiamart" in (c.get("domain") or "") or "indiamart" in (c.get("name") or "")
+            ]
+            payload = filtered or cookies
+            if not payload:
+                return False
+            session_file = self.slot_dir / "session.enc"
+            session_file.write_text(json.dumps(payload, indent=2))
+            self._apply_cookie_list_to_session(self.session, payload)
+            self._cookie_mtime = session_file.stat().st_mtime
+            return True
+        except Exception as exc:
+            self.record_error(str(exc)[:200])
+            return False
+
     # ---------- Helpers ---------- #
-
-    def _search_terms(self) -> List[str]:
-        terms = self.config.get("search_terms") or []
-        return [t for t in terms if isinstance(t, str) and t.strip()]
-
-    def _current_term(self) -> Optional[str]:
-        terms = self._search_terms()
-        if not terms:
-            return None
-        idx = self.state.get("current_term_idx", 0)
-        if idx >= len(terms):
-            return None
-        return terms[idx]
-
-    def _build_search_url(self, term: str, page: int) -> str:
-        # IndiaMart search endpoint works without auth for discovery.
-        return (
-            "https://www.indiamart.com/search.mp"
-            f"?ss={requests.utils.quote(term)}"
-            f"&pg={page}"
-        )
 
     def _record_action(self, action: str, phase: str, **metrics):
         self.state["last_action"] = action
         self.update_metrics(last_action=action, phase=phase, **metrics)
 
-    # ---------- Fetch / Parse / Persist ---------- #
+    def _strip_tags(self, text: str) -> str:
+        cleaned = re.sub(r"<[^>]+>", " ", text or "")
+        return " ".join(cleaned.replace("\n", " ").split()).strip()
+
+    def _normalize_url(self, url: str) -> str:
+        if not url:
+            return ""
+        if url.startswith("//"):
+            return f"https:{url}"
+        if url.startswith("http"):
+            return url
+        return requests.compat.urljoin(self.DEFAULT_RECENT_URL, url)
+
+    def _extract_id_from_url(self, url: str) -> Optional[str]:
+        if not url:
+            return None
+        for pattern in self.ID_PATTERNS:
+            match = pattern.search(url)
+            if match:
+                return match.group(1)
+        return None
+
+    def _extract_ids(self, html: str) -> List[str]:
+        found = []
+        seen = set()
+        if not html:
+            return found
+
+        for pattern in self.ID_PATTERNS:
+            for match in pattern.findall(html):
+                if match and match not in seen:
+                    seen.add(match)
+                    found.append(match)
+
+        for match in self.DATA_ID_PATTERN.findall(html):
+            if match and match not in seen:
+                seen.add(match)
+                found.append(match)
+
+        return found
+
+    def _looks_like_lead_link(self, href: str) -> bool:
+        if not href:
+            return False
+        token = href.lower()
+        return any(k in token for k in ("bltxn", "lead", "blproduct", "enq", "rfq", "blid"))
+
+    def _lead_key(self, lead: Dict[str, str]) -> str:
+        lead_id = str(lead.get("lead_id") or "").strip()
+        if lead_id:
+            return f"id:{lead_id}"
+        url = str(lead.get("url") or lead.get("detail_url") or "").strip()
+        if url:
+            return f"url:{url.split('?')[0]}"
+        title = str(lead.get("title") or lead.get("company") or "").strip().lower()
+        if title:
+            return f"title:{title}"
+        digest = hashlib.sha1(json.dumps(lead, sort_keys=True).encode("utf-8")).hexdigest()
+        return f"hash:{digest}"
+
+    def _load_existing_keys(self, max_lines: int = 2000) -> set:
+        leads_path = self.slot_dir / "leads.jsonl"
+        if not leads_path.exists():
+            return set()
+        queue: deque[str] = deque(maxlen=max_lines)
+        with leads_path.open() as handle:
+            for line in handle:
+                line = line.strip()
+                if line:
+                    queue.append(line)
+        keys = set()
+        for line in queue:
+            try:
+                lead = json.loads(line)
+            except Exception:
+                continue
+            key = self._lead_key(lead)
+            if key:
+                keys.add(key)
+        return keys
+
+    def _snapshot_html(self, name: str, html: str):
+        if not self.config.get("debug_snapshot"):
+            return
+        if not html:
+            return
+        path = self.slot_dir / f"{name}.html"
+        try:
+            path.write_text(html[:200000])
+        except Exception:
+            pass
+
+    def _page_logged_in(self, html: str) -> bool:
+        if not html:
+            return False
+        lower = html.lower()
+        return "logout" in lower or "sign out" in lower
+
+    def _parse_age_seconds(self, value: Optional[str]) -> Optional[int]:
+        if not value:
+            return None
+        text = str(value).strip().lower()
+        if not text:
+            return None
+        if "just now" in text or text == "0 sec" or text == "0 secs":
+            return 0
+        match = re.search(r"(\\d+)\\s*(sec|s|second|seconds|min|mins|minute|minutes|hr|hrs|hour|hours|day|days)", text)
+        if not match:
+            return None
+        amount = int(match.group(1))
+        unit = match.group(2)
+        if unit.startswith("s"):
+            return amount
+        if unit.startswith("min"):
+            return amount * 60
+        if unit.startswith("h"):
+            return amount * 3600
+        if unit.startswith("d"):
+            return amount * 86400
+        return None
+
+    def _extract_urls_from_item(self, item: dict) -> Tuple[Optional[str], Optional[str]]:
+        if not isinstance(item, dict):
+            return None, None
+        buy_url = None
+        detail_url = None
+        for key, value in item.items():
+            if not isinstance(value, str):
+                continue
+            val = value.strip()
+            if not val:
+                continue
+            if not (val.startswith("/") or val.startswith("http")):
+                continue
+            token = key.lower()
+            if "buy" in token or "purchase" in token:
+                buy_url = self._normalize_url(val)
+            elif "detail" in token or "view" in token or "lead" in token or "bl" in token:
+                detail_url = self._normalize_url(val)
+        return buy_url, detail_url
+
+    def _snapshot_json(self, name: str, payload: dict):
+        if not self.config.get("debug_snapshot"):
+            return
+        path = self.slot_dir / f"{name}.json"
+        try:
+            path.write_text(json.dumps(payload, indent=2)[:200000])
+        except Exception:
+            pass
+
+    # ---------- Fetch / Parse ---------- #
+
+    def _ensure_browser(self) -> bool:
+        if self._playwright_missing:
+            return False
+        if self._context and self._page:
+            return True
+        try:
+            from playwright.sync_api import sync_playwright
+        except Exception:
+            self._playwright_missing = True
+            self.record_error("playwright_missing")
+            return False
+
+        self._playwright = sync_playwright().start()
+        profile_dir = self.BASE_DIR / "browser_profiles" / self.slot_dir.name
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        self._context = self._playwright.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=True,
+            args=["--disable-dev-shm-usage", "--no-sandbox"],
+            viewport={"width": 1440, "height": 900},
+        )
+        cookies = self._load_cookie_list()
+        if cookies:
+            try:
+                self._context.add_cookies(cookies)
+            except Exception:
+                pass
+        pages = self._context.pages
+        self._page = pages[0] if pages else self._context.new_page()
+        self._page.set_default_timeout(12000)
+        return True
+
+    def _close_browser(self):
+        try:
+            if self._context:
+                self._context.close()
+        except Exception:
+            pass
+        try:
+            if self._playwright:
+                self._playwright.stop()
+        except Exception:
+            pass
+        self._context = None
+        self._page = None
+        self._playwright = None
+
+    def _render_page(self, url: str) -> Optional[str]:
+        if not self._ensure_browser():
+            return None
+        try:
+            self._page.goto(url, wait_until="domcontentloaded")
+            wait_ms = int(self.config.get("render_wait_ms") or 0)
+            if wait_ms > 0:
+                self._page.wait_for_timeout(wait_ms)
+            return self._page.content()
+        except Exception as exc:
+            self.record_error(str(exc)[:200])
+            return None
+
+    def _fetch_recent_payload(self) -> Optional[dict]:
+        url = self.config.get("recent_api_url") or self.DEFAULT_RECENT_API_URL
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        try:
+            resp = self.session.get(url, headers=headers, timeout=self.REQUEST_TIMEOUT)
+        except requests.RequestException as exc:
+            self.record_error(str(exc)[:200])
+            return None
+        if resp.status_code != 200:
+            self.record_error(f"recent_api_http_{resp.status_code}")
+            return None
+        try:
+            return resp.json()
+        except Exception:
+            text = (resp.text or "").lower()
+            if "login" in text or "sign in" in text:
+                self.record_error("login_required")
+                self._refresh_cookies_from_browser()
+            return None
+
+    def _parse_recent_payload(self, payload: dict) -> List[Dict[str, str]]:
+        if not isinstance(payload, dict):
+            return []
+        items = payload.get("DisplayList") or payload.get("displayList")
+        if not items and isinstance(payload.get("data"), dict):
+            items = payload["data"].get("DisplayList") or payload["data"].get("displayList")
+        if not isinstance(items, list):
+            return []
+
+        max_new = max(int(self.config.get("max_new_per_cycle") or 0), 1)
+        allow_unknown = bool(self.config.get("allow_unknown_age"))
+        max_age = self.config.get("max_lead_age_seconds")
+        max_age = int(max_age) if max_age is not None else 0
+
+        leads: List[Dict[str, str]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            lead_id = str(
+                item.get("ETO_OFR_ID")
+                or item.get("BL_ID")
+                or item.get("bl_id")
+                or item.get("lead_id")
+                or item.get("id")
+                or ""
+            ).strip()
+
+            title = str(
+                item.get("ETO_OFR_TITLE")
+                or item.get("ETO_OFR_NAME")
+                or item.get("PRODUCT_NAME")
+                or item.get("SUBJECT")
+                or item.get("ENQ_SUBJECT")
+                or ""
+            ).strip()
+
+            age_label = item.get("BLDATETIME") or item.get("BLDateTime") or item.get("BL_DATE_TIME")
+            age_seconds = self._parse_age_seconds(age_label)
+
+            if age_seconds is None and not allow_unknown:
+                continue
+            if age_seconds is not None and age_seconds > max_age:
+                continue
+
+            purchase_status = str(item.get("PURCHASE_STATUS") or item.get("purchase_status") or "").strip()
+            buy_url, detail_url = self._extract_urls_from_item(item)
+
+            lead = {
+                "lead_id": lead_id or None,
+                "title": title[:140] if title else None,
+                "detail_url": detail_url,
+                "buy_url": buy_url,
+                "source": "indiamart_seller",
+                "status": "captured",
+                "age_label": age_label,
+                "age_seconds": age_seconds,
+                "purchase_status": purchase_status or None,
+            }
+
+            leads.append({k: v for k, v in lead.items() if v is not None})
+            if len(leads) >= max_new:
+                break
+
+        return leads
+
+    def _collect_dom_leads(self) -> List[Dict[str, str]]:
+        if not self._ensure_browser():
+            return []
+        max_new = max(int(self.config.get("max_new_per_cycle") or 0), 1)
+        allow_unknown = bool(self.config.get("allow_unknown_age"))
+        max_age = self.config.get("max_lead_age_seconds")
+        max_age = int(max_age) if max_age is not None else 0
+        js = """
+        (opts) => {
+          const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+          const ageToSeconds = (text) => {
+            if (!text) return null;
+            const t = text.toLowerCase();
+            if (t.includes('just now')) return 0;
+            const m = t.match(/(\\d+)\\s*(sec|s|second|seconds|min|mins|minute|minutes|hr|hrs|hour|hours)/);
+            if (!m) return null;
+            const val = parseInt(m[1], 10);
+            const unit = m[2];
+            if (unit.startsWith('s')) return val;
+            if (unit.startsWith('min')) return val * 60;
+            if (unit.startsWith('h')) return val * 3600;
+            return null;
+          };
+          const extractLeadId = (html) => {
+            const patterns = [
+              /blid=(\\d+)/i,
+              /bl_id=(\\d+)/i,
+              /leadid=(\\d+)/i,
+              /lead_id=(\\d+)/i,
+              /rfq_id=(\\d+)/i,
+              /enqid=(\\d+)/i,
+              /enquiryid=(\\d+)/i,
+              /inquiryid=(\\d+)/i,
+              /\\/bl\\/(\\d+)/i,
+              /\\/lead\\/(\\d+)/i
+            ];
+            for (const p of patterns) {
+              const m = html.match(p);
+              if (m) return m[1];
+            }
+            return null;
+          };
+          const candidates = new Set();
+          document.querySelectorAll('[data-blid],[data-bl_id],[data-leadid],[data-lead_id],[data-rfq_id],[data-enqid],[data-enquiryid],[data-inquiryid]').forEach(el => {
+            candidates.add(el.closest('li, tr, div') || el);
+          });
+          document.querySelectorAll('a,button').forEach(el => {
+            const text = normalize(el.textContent || '');
+            if (/buy/i.test(text)) {
+              candidates.add(el.closest('li, tr, div') || el);
+            }
+          });
+          const results = [];
+          for (const card of candidates) {
+            if (results.length >= opts.maxNew) break;
+            const html = card.innerHTML || '';
+            const leadId = extractLeadId(html);
+            const titleEl = card.querySelector('strong, b, h4, h3, h2');
+            const title = normalize(titleEl ? titleEl.textContent : card.textContent || '').slice(0, 140);
+            const linkEl = card.querySelector('a[href]');
+            let url = linkEl ? linkEl.getAttribute('href') : '';
+            if (url && url.startsWith('/')) url = location.origin + url;
+            const ageMatch = (card.textContent || '').match(/(\\d+\\s*(?:sec|s|second|seconds|min|mins|minute|minutes|hr|hrs|hour|hours)|just now)/i);
+            const ageSeconds = ageToSeconds(ageMatch ? ageMatch[0] : null);
+            const buyEl = Array.from(card.querySelectorAll('a,button')).find(el => /buy/i.test(el.textContent || ''));
+            const hasBuy = !!buyEl;
+            results.push({
+              lead_id: leadId,
+              title,
+              url,
+              age_seconds: ageSeconds,
+              has_buy: hasBuy
+            });
+          }
+          return results;
+        }
+        """
+        try:
+            leads = self._page.evaluate(js, {
+                "maxNew": max_new,
+                "allowUnknown": allow_unknown,
+                "maxAge": max_age,
+            }) or []
+            filtered = []
+            for lead in leads:
+                age = lead.get("age_seconds")
+                if age is None and not allow_unknown:
+                    continue
+                if age is not None and age > max_age:
+                    continue
+                filtered.append(lead)
+            return filtered
+        except Exception as exc:
+            self.record_error(str(exc)[:200])
+            return []
+
+    def _click_buy_leads_in_browser(self, leads: List[Dict[str, str]]) -> List[str]:
+        if not self._ensure_browser():
+            return []
+        max_clicks = int(self.config.get("max_clicks_per_cycle") or 0)
+        if max_clicks <= 0:
+            return []
+        max_age = self.config.get("max_lead_age_seconds")
+        max_age = int(max_age) if max_age is not None else 0
+        allow_unknown = bool(self.config.get("allow_unknown_age"))
+        js = """
+        (opts) => {
+          const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+          const ageToSeconds = (text) => {
+            if (!text) return null;
+            const t = text.toLowerCase();
+            if (t.includes('just now')) return 0;
+            const m = t.match(/(\\d+)\\s*(sec|s|second|seconds|min|mins|minute|minutes|hr|hrs|hour|hours)/);
+            if (!m) return null;
+            const val = parseInt(m[1], 10);
+            const unit = m[2];
+            if (unit.startsWith('s')) return val;
+            if (unit.startsWith('min')) return val * 60;
+            if (unit.startsWith('h')) return val * 3600;
+            return null;
+          };
+          const extractLeadId = (html) => {
+            const patterns = [
+              /blid=(\\d+)/i,
+              /bl_id=(\\d+)/i,
+              /leadid=(\\d+)/i,
+              /lead_id=(\\d+)/i,
+              /rfq_id=(\\d+)/i,
+              /enqid=(\\d+)/i,
+              /enquiryid=(\\d+)/i,
+              /inquiryid=(\\d+)/i,
+              /\\/bl\\/(\\d+)/i,
+              /\\/lead\\/(\\d+)/i
+            ];
+            for (const p of patterns) {
+              const m = html.match(p);
+              if (m) return m[1];
+            }
+            return null;
+          };
+          const candidates = new Set();
+          document.querySelectorAll('[data-blid],[data-bl_id],[data-leadid],[data-lead_id],[data-rfq_id],[data-enqid],[data-enquiryid],[data-inquiryid]').forEach(el => {
+            candidates.add(el.closest('li, tr, div') || el);
+          });
+          document.querySelectorAll('a,button').forEach(el => {
+            const text = normalize(el.textContent || '');
+            if (/buy/i.test(text)) {
+              candidates.add(el.closest('li, tr, div') || el);
+            }
+          });
+          const clicked = [];
+          let clicks = 0;
+          for (const card of candidates) {
+            if (clicks >= opts.maxClicks) break;
+            const html = card.innerHTML || '';
+            const leadId = extractLeadId(html);
+            const ageMatch = (card.textContent || '').match(/(\\d+\\s*(?:sec|s|second|seconds|min|mins|minute|minutes|hr|hrs|hour|hours)|just now)/i);
+            const ageSeconds = ageToSeconds(ageMatch ? ageMatch[0] : null);
+            if (ageSeconds === null && !opts.allowUnknown) continue;
+            if (ageSeconds !== null && ageSeconds > opts.maxAge) continue;
+            const buyEl = Array.from(card.querySelectorAll('a,button')).find(el => /buy/i.test(el.textContent || ''));
+            if (!buyEl) continue;
+            try {
+              buyEl.scrollIntoView({block: 'center'});
+              buyEl.click();
+              clicks += 1;
+              clicked.push(leadId || (buyEl.getAttribute('href') || ''));
+            } catch (err) {
+              continue;
+            }
+          }
+          return clicked;
+        }
+        """
+        try:
+            return self._page.evaluate(js, {
+                "maxClicks": max_clicks,
+                "maxAge": max_age,
+                "allowUnknown": allow_unknown,
+            }) or []
+        except Exception as exc:
+            self.record_error(str(exc)[:200])
+            return []
 
     def _fetch_page(self, url: str) -> Optional[str]:
         last_error = None
@@ -139,95 +730,167 @@ class IndiaMartWorker(BaseWorker):
             try:
                 resp = self.session.get(url, timeout=self.REQUEST_TIMEOUT)
                 if resp.status_code == 200:
+                    self.update_metrics(last_error=None)
                     return resp.text
                 last_error = f"HTTP {resp.status_code}"
             except requests.RequestException as exc:
                 last_error = str(exc)
 
-            # small backoff to avoid hammering
-            time.sleep(min(2 * attempt, 5))
+            time.sleep(min(2 * attempt, 6))
 
         if last_error:
             self.record_error(last_error[:200])
         return None
 
-    def _parse_leads(self, html: str) -> List[Dict[str, str]]:
-        """
-        Lightweight, forgiving parser that looks for IndiaMart-ish anchors.
-        Avoids external dependencies; tolerates layout changes.
-        """
+    def _parse_recent_leads(self, html: str) -> List[Dict[str, str]]:
         leads = []
         seen = set()
+        max_new = max(int(self.config.get("max_new_per_cycle") or 0), 1)
 
-        for anchor in html.split("<a"):
-            if "href" not in anchor:
+        for match in self.ANCHOR_PATTERN.finditer(html or ""):
+            href = match.group(1) or ""
+            if not self._looks_like_lead_link(href):
                 continue
-
-            # crude href extraction
-            href_part = anchor.split("href", 1)[1]
-            quote = "\"" if "\"" in href_part else "'"
-            if quote not in href_part:
-                continue
-            try:
-                href = href_part.split(quote, 2)[1]
-            except Exception:
+            title = self._strip_tags(match.group(2))
+            if not title:
                 continue
 
-            if not href or href.startswith("#"):
-                continue
+            lead_id = self._extract_id_from_url(href)
+            if not lead_id:
+                data_match = self.DATA_ID_PATTERN.search(match.group(0))
+                lead_id = data_match.group(1) if data_match else None
 
-            if "indiamart" not in href:
-                href_full = f"https://www.indiamart.com{href}" if href.startswith("/") else href
-            else:
-                href_full = href
-
-            if not any(k in href_full for k in ("company", "proddetail", "impcat", "lead")):
+            url = self._normalize_url(href)
+            key = lead_id or url
+            if key in seen:
                 continue
-
-            # crude text extraction: up to closing anchor
-            text_part = anchor.split(">", 1)
-            if len(text_part) < 2:
-                continue
-            text = text_part[1].split("</a", 1)[0]
-            text = " ".join(text.replace("\n", " ").split()).strip()
-            if len(text) < 3:
-                continue
-
-            lead_id = href_full.split("?")[0]
-            if lead_id in seen:
-                continue
+            seen.add(key)
 
             leads.append({
-                "title": text[:120],
-                "url": href_full,
-                "source": "indiamart",
+                "lead_id": lead_id,
+                "title": title[:140],
+                "url": url,
+                "detail_url": url,
+                "source": "indiamart_seller",
+                "status": "captured",
             })
-            seen.add(lead_id)
 
-            if len(leads) >= self.MAX_LEADS_PER_PAGE:
+            if len(leads) >= max_new:
                 break
 
+        if leads:
+            return leads
+
+        for lead_id in self._extract_ids(html or "")[:max_new]:
+            leads.append({
+                "lead_id": lead_id,
+                "title": f"Lead {lead_id}",
+                "source": "indiamart_seller",
+                "status": "captured",
+            })
         return leads
+
+    def _parse_verified(self, html: str) -> Tuple[set, set]:
+        ids = set(self._extract_ids(html or ""))
+        urls = set()
+        for match in self.ANCHOR_PATTERN.finditer(html or ""):
+            href = match.group(1) or ""
+            if not self._looks_like_lead_link(href):
+                continue
+            urls.add(self._normalize_url(href))
+        return ids, urls
+
+    def _click_leads(self, leads: List[Dict[str, str]]) -> int:
+        max_clicks = int(self.config.get("max_clicks_per_cycle") or 0)
+        if max_clicks <= 0:
+            return 0
+
+        clicks = 0
+        for lead in leads:
+            if clicks >= max_clicks:
+                break
+            url = lead.get("detail_url") or lead.get("url")
+            if not url:
+                continue
+            try:
+                resp = self.session.get(url, timeout=self.REQUEST_TIMEOUT)
+                if resp.status_code == 200:
+                    lead["status"] = "clicked"
+                    lead["clicked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    clicks += 1
+                else:
+                    self.record_error(f"click_http_{resp.status_code}")
+            except requests.RequestException as exc:
+                self.record_error(str(exc)[:200])
+            time.sleep(0.4)
+        return clicks
+
+    def _purchase_leads(self, leads: List[Dict[str, str]]) -> int:
+        max_clicks = int(self.config.get("max_clicks_per_cycle") or 0)
+        if max_clicks <= 0:
+            return 0
+
+        clicks = 0
+        allow_detail = bool(self.config.get("allow_detail_click", False))
+        for lead in leads:
+            if clicks >= max_clicks:
+                break
+            target = lead.get("buy_url")
+            if not target and allow_detail:
+                target = lead.get("detail_url") or lead.get("url")
+            if not target:
+                continue
+            try:
+                resp = self.session.get(target, timeout=self.REQUEST_TIMEOUT)
+                if resp.status_code == 200:
+                    lead["status"] = "clicked"
+                    lead["clicked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    lead["buy_attempt_url"] = target
+                    lead["buy_attempt_status"] = resp.status_code
+                    clicks += 1
+                else:
+                    lead["buy_attempt_url"] = target
+                    lead["buy_attempt_status"] = resp.status_code
+                    self.record_error(f"buy_http_{resp.status_code}")
+            except requests.RequestException as exc:
+                self.record_error(str(exc)[:200])
+            time.sleep(0.4)
+        return clicks
+
+    def _apply_verification(self, leads: List[Dict[str, str]], verified_ids: set, verified_urls: set):
+        if not leads:
+            return
+        for lead in leads:
+            lead_id = str(lead.get("lead_id") or "").strip()
+            url = str(lead.get("detail_url") or lead.get("url") or "").strip()
+            if lead_id and lead_id in verified_ids:
+                lead["status"] = "verified"
+                lead["verified_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            elif url and url in verified_urls:
+                lead["status"] = "verified"
+                lead["verified_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     def _persist_leads(self, leads: List[Dict[str, str]]):
         if not leads:
             return
 
         leads_path = self.slot_dir / "leads.jsonl"
-        lines = [
-            json.dumps({
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        lines = []
+        for lead in leads:
+            lead_key = self._lead_key(lead)
+            payload = {
                 **lead,
+                "lead_key": lead_key,
                 "slot_id": self.slot_dir.name,
-                "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            })
-            for lead in leads
-        ]
+                "fetched_at": lead.get("fetched_at") or now,
+            }
+            lines.append(json.dumps(payload))
 
-        with open(leads_path, "a", encoding="utf-8") as f:
+        with open(leads_path, "a", encoding="utf-8") as handle:
             for line in lines:
-                f.write(line + "\n")
+                handle.write(line + "\n")
 
-        # update metrics after durable write
         state = self.load_state()
         metrics = state.get("metrics", {})
         metrics["leads_parsed"] = metrics.get("leads_parsed", 0) + len(leads)
@@ -238,7 +901,8 @@ class IndiaMartWorker(BaseWorker):
     # ---------- Phase handlers ---------- #
 
     def _enter_cooldown(self, reason: str):
-        cooldown = self.compute_cooldown()
+        configured = self.config.get("cooldown_seconds")
+        cooldown = configured if isinstance(configured, (int, float)) and configured >= 0 else self.compute_cooldown()
         self.state["cooldown_until"] = time.time() + cooldown
         self.state["phase"] = "COOLDOWN"
         self._record_action(reason, "COOLDOWN", cooldown=cooldown)
@@ -256,103 +920,185 @@ class IndiaMartWorker(BaseWorker):
         return 20
 
     def _init_phase(self):
-        terms = self._search_terms()
-        if not terms:
-            self._record_action("no_terms", "COOLDOWN", last_error="No search terms configured")
-            self.state["phase"] = "COOLDOWN"
-            self.state["cooldown_until"] = time.time() + 15
+        self.state["phase"] = "FETCH_RECENT"
+        self._record_action("init", "FETCH_RECENT")
+
+    def _fetch_recent_phase(self):
+        url = self.config.get("recent_url") or self.DEFAULT_RECENT_URL
+        self._record_action("fetch_recent", "FETCH_RECENT")
+        self._maybe_reload_cookies()
+        prefer_api = bool(self.config.get("prefer_api", True))
+        payload = None
+        if prefer_api:
+            payload = self._fetch_recent_payload()
+        if payload:
+            self.state["recent_payload"] = payload
+            self._snapshot_json("recent_payload", payload)
+            metrics = self.load_state().get("metrics", {})
+            self.update_metrics(pages_fetched=metrics.get("pages_fetched", 0) + 1, phase="PARSE_RECENT")
+            self.state["phase"] = "PARSE_RECENT"
             return
 
-        self.state["phase"] = "FETCH_PAGE"
-        self._record_action("init", "FETCH_PAGE")
-
-    def _fetch_phase(self):
-        term = self._current_term()
-        if not term:
-            # all terms done, rest a bit before retrying from start
-            self.state["current_term_idx"] = 0
-            self.state["current_page"] = 1
-            self._enter_cooldown("cycle_complete")
-            return
-
-        url = self._build_search_url(term, self.state["current_page"])
-        self._record_action("fetch_page", "FETCH_PAGE", current_term=term, page=self.state["current_page"])
-        html = self._fetch_page(url)
-
+        html = self._render_page(url) if self.config.get("use_browser", True) else self._fetch_page(url)
         if not html:
-            self._enter_cooldown("fetch_failed")
+            self._enter_cooldown("fetch_recent_failed")
             return
+        if not self._page_logged_in(html):
+            self.record_error("login_required")
+            self._refresh_cookies_from_browser()
+        self.state["recent_html"] = html
+        self._snapshot_html("recent_snapshot", html)
+        metrics = self.load_state().get("metrics", {})
+        self.update_metrics(pages_fetched=metrics.get("pages_fetched", 0) + 1, phase="PARSE_RECENT")
+        self.state["phase"] = "PARSE_RECENT"
 
-        self.page_html = html
-        self.state["phase"] = "PARSE_LEADS"
-        self.update_metrics(pages_fetched=self.load_state().get("metrics", {}).get("pages_fetched", 0) + 1,
-                            phase="PARSE_LEADS")
-
-    def _parse_phase(self):
-        if not self.page_html:
-            self._enter_cooldown("missing_page")
-            return
-
-        leads = self._parse_leads(self.page_html)
-        self.state["leads_buffer"] = leads
-        self.page_html = None
+    def _parse_recent_phase(self):
+        payload = self.state.get("recent_payload")
+        html = self.state.get("recent_html")
+        leads: List[Dict[str, str]] = []
+        if payload is not None:
+            leads = self._parse_recent_payload(payload)
+        else:
+            if self.config.get("use_browser", True):
+                leads = self._collect_dom_leads()
+                if not leads and html:
+                    leads = self._parse_recent_leads(html)
+            else:
+                leads = self._parse_recent_leads(html or "")
+        self.state["recent_html"] = None
+        self.state["recent_payload"] = None
 
         if not leads:
-            self._enter_cooldown("no_leads")
+            self._enter_cooldown("no_recent_leads")
             return
 
-        self.state["phase"] = "WRITE_LEADS"
-        self._record_action("parsed", "WRITE_LEADS", parsed=len(leads))
+        existing = self._load_existing_keys()
+        fresh = []
+        for lead in leads:
+            key = self._lead_key(lead)
+            if key in existing:
+                continue
+            lead["lead_key"] = key
+            fresh.append(lead)
+            existing.add(key)
 
-    def _write_phase(self):
+        if not fresh:
+            self._enter_cooldown("no_new_leads")
+            return
+
+        self.state["leads_buffer"] = fresh
+        self.state["phase"] = "CLICK_LEADS"
+        self._record_action("parsed_recent", "CLICK_LEADS", parsed=len(fresh))
+
+    def _click_leads_phase(self):
+        leads = self.state.get("leads_buffer", [])
+        clicked_keys = []
+        prefer_api = bool(self.config.get("prefer_api", True))
+        if prefer_api and not self.config.get("use_browser", False):
+            clicks = self._purchase_leads(leads)
+        elif prefer_api:
+            clicks = self._purchase_leads(leads)
+            if clicks == 0 and self.config.get("use_browser", True):
+                clicked_keys = self._click_buy_leads_in_browser(leads)
+                now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                for lead in leads:
+                    lead_id = str(lead.get("lead_id") or "")
+                    url = str(lead.get("url") or lead.get("detail_url") or "")
+                    if lead_id and lead_id in clicked_keys:
+                        lead["status"] = "clicked"
+                        lead["clicked_at"] = now
+                    elif url and url in clicked_keys:
+                        lead["status"] = "clicked"
+                        lead["clicked_at"] = now
+                clicks += len(clicked_keys)
+        elif self.config.get("use_browser", True):
+            clicked_keys = self._click_buy_leads_in_browser(leads)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            for lead in leads:
+                lead_id = str(lead.get("lead_id") or "")
+                url = str(lead.get("url") or lead.get("detail_url") or "")
+                if lead_id and lead_id in clicked_keys:
+                    lead["status"] = "clicked"
+                    lead["clicked_at"] = now
+                elif url and url in clicked_keys:
+                    lead["status"] = "clicked"
+                    lead["clicked_at"] = now
+            clicks = len(clicked_keys)
+        else:
+            clicks = self._click_leads(leads)
+        self.state["phase"] = "FETCH_VERIFIED"
+        self._record_action("clicked", "FETCH_VERIFIED", clicked=clicks)
+
+    def _fetch_verified_phase(self):
+        url = self.config.get("verified_url") or self.DEFAULT_VERIFIED_URL
+        html = self._render_page(url) if self.config.get("use_browser", True) else self._fetch_page(url)
+        if not html:
+            self.state["verified_html"] = None
+            self.state["phase"] = "WRITE_LEADS"
+            self._record_action("verify_skip", "WRITE_LEADS")
+            return
+        if not self._page_logged_in(html):
+            self.record_error("login_required")
+        self.state["verified_html"] = html
+        self._snapshot_html("verified_snapshot", html)
+        self.state["phase"] = "PARSE_VERIFIED"
+        self._record_action("fetch_verified", "PARSE_VERIFIED")
+
+    def _parse_verified_phase(self):
+        html = self.state.get("verified_html")
+        verified_ids, verified_urls = self._parse_verified(html or "")
+        self.state["verified_html"] = None
+        leads = self.state.get("leads_buffer", [])
+        self._apply_verification(leads, verified_ids, verified_urls)
+        self.state["phase"] = "WRITE_LEADS"
+        self._record_action("verified_parsed", "WRITE_LEADS", verified=len(verified_ids))
+
+    def _write_leads_phase(self):
         leads = self.state.get("leads_buffer", [])
         self._persist_leads(leads)
         self.state["leads_buffer"] = []
-
-        self.state["phase"] = "COOLDOWN"
-        self.state["current_page"] += 1
-
-        # cycle pages per term
-        max_pages = max(int(self.config.get("max_pages_per_term") or 1), 1)
-        if self.state["current_page"] > max_pages:
-            self.state["current_term_idx"] += 1
-            self.state["current_page"] = 1
-
         self._enter_cooldown("write_done")
 
     def _cooldown_phase(self):
         now = time.time()
         until = self.state.get("cooldown_until", 0)
         if now < until:
-            # stay idle but keep heartbeat going
             return
-
-        self.state["phase"] = "FETCH_PAGE"
-        self._record_action("resume", "FETCH_PAGE")
+        self.state["phase"] = "FETCH_RECENT"
+        self._record_action("resume", "FETCH_RECENT")
 
     # ---------- Tick ---------- #
 
     def tick(self):
+        self._maybe_reload_cookies()
         phase = self.state.get("phase", "INIT")
-
         try:
             if phase == "INIT":
                 self._init_phase()
-            elif phase == "FETCH_PAGE":
-                self._fetch_phase()
-            elif phase == "PARSE_LEADS":
-                self._parse_phase()
+            elif phase == "FETCH_RECENT":
+                self._fetch_recent_phase()
+            elif phase == "PARSE_RECENT":
+                self._parse_recent_phase()
+            elif phase == "CLICK_LEADS":
+                self._click_leads_phase()
+            elif phase == "FETCH_VERIFIED":
+                self._fetch_verified_phase()
+            elif phase == "PARSE_VERIFIED":
+                self._parse_verified_phase()
             elif phase == "WRITE_LEADS":
-                self._write_phase()
+                self._write_leads_phase()
             elif phase == "COOLDOWN":
                 self._cooldown_phase()
             else:
-                # unknown phase; reset safely
                 self.state["phase"] = "INIT"
                 self._record_action("reset", "INIT")
         except Exception as exc:
             self.record_error(str(exc)[:200])
             self._enter_cooldown("unhandled_error")
+
+    def shutdown(self):
+        self._close_browser()
+        super().shutdown()
 
 
 def main():

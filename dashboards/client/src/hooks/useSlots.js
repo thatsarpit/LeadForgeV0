@@ -18,10 +18,25 @@ export default function useSlots({ pollInterval = 3000 } = {}) {
 
   const pollRef = useRef(null);
 
+  const resolveSlot = (slotOrId, nodeId) => {
+    if (slotOrId && typeof slotOrId === "object") {
+      return {
+        id: slotOrId.slot_id || slotOrId.id,
+        nodeId: slotOrId.node_id,
+      };
+    }
+    return { id: slotOrId, nodeId };
+  };
+
   const loadSlots = async () => {
     try {
       const data = await fetchSlots();
-      setSlots(data.slots || []);
+      const filtered = (data.slots || []).filter((slot) => {
+        const raw = String(slot.slot_id || slot.id || "");
+        const slotId = raw.includes("::") ? raw.split("::").pop() : raw;
+        return slotId && !slotId.startsWith("_");
+      });
+      setSlots(filtered);
       setError(null);
     } catch (err) {
       console.error("[useSlots] fetch failed", err);
@@ -57,18 +72,20 @@ export default function useSlots({ pollInterval = 3000 } = {}) {
     );
   };
 
-  const handleAction = async (slotId, action) => {
-    markBusy(slotId);
+  const handleAction = async (slotOrId, action, nodeId) => {
+    const resolved = resolveSlot(slotOrId, nodeId);
+    if (!resolved.id) return;
+    markBusy(resolved.id);
 
     try {
-      if (action === "start") await startSlot(slotId);
-      if (action === "stop") await stopSlot(slotId);
-      if (action === "restart") await restartSlot(slotId);
+      if (action === "start") await startSlot(resolved.id, resolved.nodeId);
+      if (action === "stop") await stopSlot(resolved.id, resolved.nodeId);
+      if (action === "restart") await restartSlot(resolved.id, resolved.nodeId);
 
       await loadSlots(); // backend reconciliation
     } catch (err) {
       console.error(`[useSlots] action failed: ${action}`, err);
-      clearBusy(slotId);
+      clearBusy(resolved.id);
     }
   };
 
@@ -78,9 +95,9 @@ export default function useSlots({ pollInterval = 3000 } = {}) {
     error,
     refresh: loadSlots,
     actions: {
-      start: (id) => handleAction(id, "start"),
-      stop: (id) => handleAction(id, "stop"),
-      restart: (id) => handleAction(id, "restart"),
+      start: (slotOrId, nodeId) => handleAction(slotOrId, "start", nodeId),
+      stop: (slotOrId, nodeId) => handleAction(slotOrId, "stop", nodeId),
+      restart: (slotOrId, nodeId) => handleAction(slotOrId, "restart", nodeId),
     },
   };
 }

@@ -1,0 +1,4 @@
+- node_id: node_local
+  node_name: Local Node
+  base_url: http://127.0.0.1:8001
+  token: replace_with_node_token

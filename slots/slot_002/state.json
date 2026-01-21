@@ -1,9 +1,0 @@
-{
-  "status": "STOPPED",
-  "mode": "OBSERVER",
-  "busy": false,
-  "pid": null,
-  "command": null,
-  "uptime_seconds": 0,
-  "last_heartbeat": null
-}

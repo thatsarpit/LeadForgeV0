@@ -1,6 +1,7 @@
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.12.0
+alembic==1.16.5
 certifi==2025.11.12
 cffi==2.0.0
 charset-normalizer==3.4.4
@@ -13,11 +14,17 @@ idna==3.11
 pycparser==2.23
 pydantic==2.12.5
 pydantic_core==2.41.5
+psycopg[binary]==3.2.10
+PyJWT==2.10.1
 python-dotenv==1.2.1
 PyYAML==6.0.3
 requests==2.32.5
+SQLAlchemy==2.0.43
 starlette==0.49.3
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 urllib3==2.6.2
 uvicorn==0.38.0
+websockets==12.0
+wsproto==1.2.0
+playwright==1.49.1

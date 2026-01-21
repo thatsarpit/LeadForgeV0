@@ -1,0 +1,41 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap");
+
+:root {
+  --engyne-bg: #f1f4f3;
+  --engyne-surface: #fbfdfc;
+  --engyne-surface-2: #f2f6f4;
+  --engyne-surface-3: #e8eeec;
+  --engyne-border: #d5dfdd;
+  --engyne-muted: #637276;
+  --engyne-text: #172126;
+  --engyne-accent: #0b4f5d;
+  --engyne-accent-2: #2f7e82;
+  --engyne-success: #7bc96f;
+  --engyne-warning: #e2b665;
+  --engyne-danger: #e08282;
+  --engyne-glow: rgba(11, 79, 93, 0.15);
+
+  --engyne-font: "Manrope", "SF Pro Text", "Segoe UI", sans-serif;
+  --engyne-font-mono: "IBM Plex Mono", "SF Mono", ui-monospace, monospace;
+
+  --engyne-radius-sm: 10px;
+  --engyne-radius-md: 16px;
+  --engyne-radius-lg: 24px;
+  --engyne-radius-xl: 32px;
+}
+
+[data-theme="dark"] {
+  --engyne-bg: #0c1215;
+  --engyne-surface: #11181c;
+  --engyne-surface-2: #162026;
+  --engyne-surface-3: #1d2830;
+  --engyne-border: #28343c;
+  --engyne-muted: #8a9aa2;
+  --engyne-text: #e7eef2;
+  --engyne-accent: #4cc9d9;
+  --engyne-accent-2: #9fe3ea;
+  --engyne-success: #7bd88f;
+  --engyne-warning: #f1c07a;
+  --engyne-danger: #e79b9b;
+  --engyne-glow: rgba(76, 201, 217, 0.2);
+}

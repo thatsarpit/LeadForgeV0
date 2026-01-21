@@ -14,6 +14,11 @@ RUNNER_PATH = BASE_DIR / "core" / "engine" / "runner.py"
 HEARTBEAT_TIMEOUT = 30  # seconds
 CHECK_INTERVAL = 3      # seconds
 STARTUP_GRACE_SECONDS = 15
+DEFAULT_SLOT_WORKER = os.getenv("DEFAULT_SLOT_WORKER", "indiamart_worker")
+DEFAULT_SLOT_MODE = os.getenv("DEFAULT_SLOT_MODE", "ACTIVE")
+VENV_PYTHON = BASE_DIR / "venv" / "bin" / "python"
+DEFAULT_PYTHON = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
+PYTHON_BIN = os.getenv("PYTHON_BIN", DEFAULT_PYTHON)
 
 PID_FILE = BASE_DIR / "runtime" / "slot_manager.pid"
 PID_FILE.parent.mkdir(exist_ok=True)
@@ -76,7 +81,7 @@ def is_process_running(pid):
 def start_runner(slot_id):
     print(f"[SLOT_MANAGER] ▶ Starting runner for {slot_id}")
     proc = subprocess.Popen(
-        ["python3", str(RUNNER_PATH), slot_id],
+        [PYTHON_BIN, str(RUNNER_PATH), slot_id],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
@@ -99,6 +104,63 @@ def within_startup_grace(state):
     except Exception:
         return True
 
+def ensure_state_defaults(state, slot_id):
+    changed = False
+    if not state.get("slot_id"):
+        state["slot_id"] = slot_id
+        changed = True
+    if not state.get("worker"):
+        state["worker"] = DEFAULT_SLOT_WORKER
+        changed = True
+    if not state.get("mode"):
+        state["mode"] = DEFAULT_SLOT_MODE
+        changed = True
+    if "status" not in state:
+        state["status"] = "STOPPED"
+        changed = True
+    if "busy" not in state:
+        state["busy"] = False
+        changed = True
+    if "pid" not in state:
+        state["pid"] = None
+        changed = True
+    if "auto_resume" not in state:
+        state["auto_resume"] = False
+        changed = True
+    if "command" not in state:
+        state["command"] = None
+        changed = True
+    if "uptime_seconds" not in state:
+        state["uptime_seconds"] = 0
+        changed = True
+    if "last_heartbeat" not in state:
+        state["last_heartbeat"] = None
+        changed = True
+    metrics = state.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+        changed = True
+    defaults = {
+        "cpu": 0,
+        "memory": 0,
+        "throughput": 0,
+        "pages_fetched": 0,
+        "leads_parsed": 0,
+        "errors": 0,
+        "last_error": None,
+        "error_rate": 0,
+        "last_action": "BOOT",
+        "phase": "BOOT",
+        "phase_started_at": None,
+        "phase_duration_sec": 0,
+    }
+    for key, value in defaults.items():
+        if key not in metrics:
+            metrics[key] = value
+            changed = True
+    state["metrics"] = metrics
+    return changed
+
 # ---------------- Main Loop ---------------- #
 
 while True:
@@ -110,7 +172,7 @@ while True:
         for slot_dir in SLOTS_DIR.iterdir():
             if not slot_dir.is_dir():
                 continue
-            if slot_dir.name.startswith("."):
+            if slot_dir.name.startswith(".") or slot_dir.name.startswith("_"):
                 continue
 
             slot_id = slot_dir.name
@@ -121,7 +183,8 @@ while True:
                 save_json(state_file, {
                     "slot_id": slot_id,
                     "status": "STOPPED",
-                    "mode": "OBSERVER",
+                    "mode": DEFAULT_SLOT_MODE,
+                    "worker": DEFAULT_SLOT_WORKER,
                     "busy": False,
                     "pid": None,
                     "auto_resume": False,
@@ -131,11 +194,22 @@ while True:
                     "metrics": {
                         "cpu": 0,
                         "memory": 0,
-                        "throughput": 0
+                        "throughput": 0,
+                        "pages_fetched": 0,
+                        "leads_parsed": 0,
+                        "errors": 0,
+                        "last_error": None,
+                        "error_rate": 0,
+                        "last_action": "BOOT",
+                        "phase": "BOOT",
+                        "phase_started_at": None,
+                        "phase_duration_sec": 0
                     }
                 })
 
             state = load_json(state_file, {})
+            if ensure_state_defaults(state, slot_id):
+                save_json(state_file, state)
 
             pid = state.get("pid")
             status = state.get("status")

@@ -49,6 +49,8 @@ def list_slots():
 
     for slot_dir in SLOTS_DIR.iterdir():
         if slot_dir.is_dir():
+            if slot_dir.name.startswith("_"):
+                continue
             try:
                 state = load_slot_state(slot_dir.name)
                 slots.append({

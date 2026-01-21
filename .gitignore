@@ -17,6 +17,22 @@ build/
 logs/
 *.log
 
+# Local config/secrets
+config/users.yml
+config/nodes.yml
+config/push_subscriptions.json
+config/clients.allowlist.txt
+config/clients.denylist.txt
+config/demo_codes.csv
+config/engyne-sql-proxy.json
+config/engyne-sql-proxy-demo.json
+.secrets/
+
+# Runtime artifacts
+runtime/
+backups/
+data/
+
 # Runtime slot files (DO NOT COMMIT)
 slots/**/heartbeat.json
 slots/**/slot_state.json
@@ -25,6 +41,15 @@ slots/**/browser_state.json
 # Browser runtime profiles (NEVER COMMIT)
 browser_profiles/
 browser_profiles/**
+whatsapp_profiles/
+whatsapp_profiles/**
+whatsapp_baileys_auth/
+whatsapp_baileys_auth/**
+
+# Slot runtime data (use templates instead)
+slots/**
+!slots/_template/
+!slots/_template/**
 
 # Chrome / Chromium artifacts
 **/Cache/
