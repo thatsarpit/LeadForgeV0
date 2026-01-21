@@ -2,9 +2,9 @@ module.exports = {
     apps: [
         {
             name: "leadforge-api",
-            script: "uvicorn",
+            script: "./venv/bin/uvicorn",
             args: "api.app:app --host 0.0.0.0 --port 8001 --ssl-keyfile ./certs/server.key --ssl-certfile ./certs/server.crt",
-            interpreter: "./venv/bin/python3",
+            interpreter: "none",
             cwd: ".",
             watch: false,
             env: {
