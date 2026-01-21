@@ -1,0 +1,98 @@
+search_terms:
+- ivermectin
+- albendazole
+- mebendazole
+- nitazoxanide
+- doxycycline
+- azithromycin
+- metronidazole
+- rifaximin
+- zopiclone
+- eszopiclone
+- pregabalin
+- gabapentin
+- carisoprodol
+- tapentadol
+- baclofen
+- tizanidine
+- testosterone
+- testosterone cypionate
+- testosterone enanthate
+- testosterone propionate
+- trenbolone
+- nandrolone
+- boldenone
+- oxandrolone
+- anavar
+- winstrol
+- dianabol
+- sustanon
+- semaglutide
+- liraglutide
+- tirzepatide
+- retatrutide
+- clenbuterol
+- cytomel
+- liothyronine
+- sildenafil
+- tadalafil
+- vardenafil
+- avanafil
+- kamagra
+- minoxidil
+- finasteride
+- dutasteride
+- isotretinoin
+- accutane
+- tretinoin
+- tenofovir
+- modafinil
+- armodafinil
+- hydroxychloroquine
+- dexamethasone
+- prednisone
+exclude_terms: []
+country:
+- au
+- australia
+- us
+- usa
+- united states
+- gb
+- uk
+- united kingdom
+- de
+- germany
+client_regions:
+- AU
+- US
+- GB
+- DE
+whatsapp_enabled: false
+whatsapp_waha_session: slot04
+whatsapp_template: ''
+whatsapp_max_per_hour: 20
+whatsapp_min_delay_s: 25
+whatsapp_stop_on_reply: false
+indiamart_message_enabled: false
+indiamart_message_template: ''
+indiamart_message_max_per_day: 20
+indiamart_message_min_delay_s: 30
+client_schedule:
+  enabled: false
+  window_start: ''
+  window_end: ''
+  days:
+  - mon
+  - tue
+  - wed
+  - thu
+  - fri
+  timezone: Asia/Calcutta
+max_clicks_per_cycle: 10
+max_clicks_per_run: 0
+max_run_minutes: 0
+max_lead_age_seconds: 30
+allow_unknown_age: true
+debug_snapshot: true
+prefer_api: false
