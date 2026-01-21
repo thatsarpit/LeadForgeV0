@@ -59,12 +59,12 @@ case "${1:-api}" in
         echo "[ENTRYPOINT] Starting Frontend..."
         cd /app/dashboards/client
         if [ -d "dist" ]; then
-            echo "[ENTRYPOINT] Serving pre-built frontend..."
-            exec npx serve -s dist -l 5173
+            echo "[ENTRYPOINT] Serving pre-built frontend on port 5173..."
+            cd dist
+            exec python3 -m http.server 5173
         else
-            echo "[ENTRYPOINT] Building and serving frontend..."
-            npm run build
-            exec npx serve -s dist -l 5173
+            echo "[ENTRYPOINT] ❌ Frontend dist/ not found!"
+            exit 1
         fi
         ;;
     
