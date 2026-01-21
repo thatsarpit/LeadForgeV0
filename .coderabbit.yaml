@@ -1,0 +1,101 @@
+language: "en-US"
+tone_instructions: "Be concise, technical, and focus on security and production readiness"
+early_access: true
+
+reviews:
+  profile: "assertive"
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+      - develop
+  
+  path_filters:
+    - path_patterns:
+        - "**/*.py"
+        - "**/*.yml"
+        - "**/*.yaml"
+        - "**/Dockerfile"
+        - "**/*.sh"
+      type: "include"
+    - path_patterns:
+        - "**/migrations/**"
+        - "**/__pycache__/**"
+        - "**/node_modules/**"
+        - "**/*.log"
+        - "**/dist/**"
+        - "**/.git/**"
+      type: "exclude"
+
+  request_changes_workflow: false
+  
+  high_level_summary: true
+  poem: false
+  review_status: true
+  
+  collapse_walkthrough: false
+  
+  path_instructions:
+    - path: "api/**"
+      instructions: |
+        Focus on:
+        - SQL injection vulnerabilities (check all database queries)
+        - Authentication and authorization flaws
+        - CORS configuration security
+        - Secret exposure in logs or responses
+        - Input validation and sanitization
+    
+    - path: "core/workers/**"
+      instructions: |
+        Review:
+        - Browser automation safety and error handling
+        - Rate limiting and anti-detection measures
+        - Proper cleanup of browser sessions
+        - Data extraction accuracy
+        - Error recovery mechanisms
+    
+    - path: "core/db/**"
+      instructions: |
+        Check:
+        - Connection pooling implementation
+        - Transaction management
+        - SQL parameterization
+        - Migration safety
+        - Indexing strategy
+    
+    - path: "Dockerfile"
+      instructions: |
+        Verify:
+        - Using minimal base images
+        - Non-root user implementation
+        - No secrets in image layers
+        - Multi-stage build optimization
+        - Security vulnerabilities in base images
+    
+    - path: "docker-compose*.yml"
+      instructions: |
+        Ensure:
+        - Secrets not exposed in environment
+        - Health checks properly configured
+        - Resource limits set
+        - Volume persistence for critical data
+        - Network isolation where needed
+    
+    - path: "**/*.py"
+      instructions: |
+        General Python review:
+        - Type hints for function signatures
+        - Proper exception handling
+        - No hardcoded credentials or API keys
+        - Logging doesn't expose sensitive data
+        - Async/await usage is correct
+        - Memory leaks in long-running processes
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: "auto"
