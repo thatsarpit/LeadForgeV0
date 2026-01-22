@@ -68,7 +68,31 @@ class BaseWorker:
         return json.loads(self.state_file.read_text())
 
     def write_state(self, state):
-        self.state_file.write_text(json.dumps(state, indent=2))
+        """Atomic write to prevent corruption from concurrent access"""
+        import tempfile
+        import os
+        
+        # Write to temp file in same directory
+        temp_fd, temp_path = tempfile.mkstemp(
+            dir=self.state_file.parent,
+            prefix=f".{self.state_file.name}.",
+            suffix=".tmp"
+        )
+        
+        try:
+            with os.fdopen(temp_fd, 'w') as f:
+                json.dump(state, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            
+            # Atomic rename
+            os.replace(temp_path, self.state_file)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+            raise
 
     def init_metrics(self):
         state = self.load_state()

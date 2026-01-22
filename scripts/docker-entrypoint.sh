@@ -1,5 +1,9 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+# Set restrictive file permissions (owner-only read/write)
+# Prevents other users on Mac Mini from reading sensitive slot data
+umask 077
 
 # LeadForge Docker Entrypoint Script
 # Handles initialization and service routing
@@ -11,7 +15,12 @@ echo "[ENTRYPOINT] Environment: ${NODE_ENV:-development}"
 # Wait for database to be ready
 wait_for_db() {
     echo "[ENTRYPOINT] Waiting for database..."
-    until pg_isready -h "$(echo $DATABASE_URL | grep -oP '(?<=@)[^:]+' || echo 'postgres')" -U leadforge 2>/dev/null; do
+    
+    # Extract host from DATABASE_URL, fallback to 'postgres' (docker-compose service name)
+    DB_HOST=$(echo "$DATABASE_URL" | sed -n 's/.*@\([^:\/]*\).*/\1/p')
+    DB_HOST=${DB_HOST:-postgres}
+    
+    until pg_isready -h "$DB_HOST" -U leadforge 2>/dev/null; do
         echo "[ENTRYPOINT] Database not ready, waiting..."
         sleep 2
     done
@@ -22,10 +31,21 @@ wait_for_db() {
 run_migrations() {
     echo "[ENTRYPOINT] Running database migrations..."
     cd /app
-    # Initialize leads table if needed - fail fast on errors
-    if ! python3 -c "from core.db.database import init_db; init_db()"; then
-        echo "[ENTRYPOINT] ❌ Migration failed! Exiting..."
-        exit 1
+    
+    # Run Alembic migrations (handles both Postgres and SQLite if configured, but critical for Postgres)
+    if command -v alembic &> /dev/null; then
+        echo "[ENTRYPOINT] Running Alembic upgrade head..."
+        if ! alembic upgrade head; then
+            echo "[ENTRYPOINT] ❌ Alembic migration failed! Exiting..."
+            exit 1
+        fi
+    else
+        echo "[ENTRYPOINT] Alembic not found, falling back to legacy init_db..."
+        # Initialize leads table if needed - fail fast on errors
+        if ! python3 -c "from core.db.database import init_db; init_db()"; then
+            echo "[ENTRYPOINT] ❌ Migration failed! Exiting..."
+            exit 1
+        fi
     fi
     echo "[ENTRYPOINT] Migrations complete"
 }

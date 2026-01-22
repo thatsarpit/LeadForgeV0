@@ -27,9 +27,15 @@ def acquire_pid_lock():
     if PID_FILE.exists():
         try:
             old_pid = int(PID_FILE.read_text())
-            os.kill(old_pid, 0)
-            print(f"[SLOT_MANAGER] ❌ Already running (PID {old_pid})")
-            sys.exit(1)
+            
+            # In Docker, we are likely PID 1. If the lock says PID 1, it's from a previous crashed crash run.
+            if old_pid == os.getpid():
+                print(f"[SLOT_MANAGER] ⚠️ Stale PID lock detected (Self-PID collision {old_pid}), recovering...")
+                PID_FILE.unlink()
+            else:
+                os.kill(old_pid, 0)
+                print(f"[SLOT_MANAGER] ❌ Already running (PID {old_pid})")
+                sys.exit(1)
         except OSError:
             print("[SLOT_MANAGER] ⚠️ Stale PID lock detected, recovering...")
             PID_FILE.unlink()
@@ -52,13 +58,13 @@ def handle_shutdown(signum, frame):
         except Exception as e:
             print(f"[SLOT_MANAGER] ⚠️ Error closing handle for {slot_id}: {e}")
     _log_handles.clear()
-    release_pid_lock()
     sys.exit(0)
 
 signal.signal(signal.SIGTERM, handle_shutdown)
 signal.signal(signal.SIGINT, handle_shutdown)
 
-acquire_pid_lock()
+# In Docker, each container runs exactly one slot_manager
+# PID locks are unnecessary and can cause issues on restart
 print("[SLOT_MANAGER] ✅ Slot Manager stabilized and running")
 
 print("[SLOT_MANAGER] ✅ Slot Manager started")
@@ -73,7 +79,32 @@ def load_json(path, default):
         return default.copy()
 
 def save_json(path, data):
-    path.write_text(json.dumps(data, indent=2))
+    """Atomic write to prevent corruption from concurrent access"""
+    import tempfile
+    import os
+    
+    # Write to temp file in same directory (ensures same filesystem for atomic rename)
+    temp_fd, temp_path = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp"
+    )
+    
+    try:
+        with os.fdopen(temp_fd, 'w') as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())  # Ensure data is written to disk
+        
+        # Atomic rename (on POSIX systems)
+        os.replace(temp_path, path)
+    except Exception:
+        # Clean up temp file on error
+        try:
+            os.unlink(temp_path)
+        except Exception:
+            pass
+        raise
 
 def utcnow():
     return datetime.now(timezone.utc).isoformat().replace('+00:00', '')
@@ -92,8 +123,15 @@ _log_handles = {}
 
 def start_runner(slot_id):
     global _log_handles
-    print(f"[SLOT_MANAGER] ▶ Starting runner for {slot_id}")
-    log_path = SLOTS_DIR / slot_id / "runner.log"
+    print(f"[SLOT_MANAGER] ▶ Starting worker for {slot_id}")
+    
+    # Read state to get worker module name
+    state_file = SLOTS_DIR / slot_id / "slot_state.json"
+    state = load_json(state_file, {})
+    worker_name = state.get("worker", DEFAULT_SLOT_WORKER)
+    
+    # Set up logging to worker.log (visible on host via volume mount)
+    log_path = SLOTS_DIR / slot_id / "worker.log"
     
     # Close any existing handle for this slot to prevent leaks
     if slot_id in _log_handles:
@@ -105,24 +143,69 @@ def start_runner(slot_id):
     # Ensure directory exists
     log_path.parent.mkdir(parents=True, exist_ok=True)
     
+    # Simple log rotation: If log > 5MB, rotate it
+    if log_path.exists() and log_path.stat().st_size > 5 * 1024 * 1024:
+        try:
+            # Keep one backup
+            backup_path = log_path.with_suffix(".log.old")
+            if backup_path.exists():
+                backup_path.unlink()
+            log_path.rename(backup_path)
+            print(f"[SLOT_MANAGER] 🔄 Rotated log for {slot_id}")
+        except Exception as e:
+            print(f"[SLOT_MANAGER] ⚠️ Failed to rotate log for {slot_id}: {e}")
+    
     # Open with line buffering for immediate visibility
     f = open(log_path, "a", buffering=1)
     _log_handles[slot_id] = f
     
+    # Spawn worker directly (no more runner.py indirection)
+    # This simplifies the architecture and makes PIDs clearer
     proc = subprocess.Popen(
-        [PYTHON_BIN, str(RUNNER_PATH), slot_id],
+        [PYTHON_BIN, "-m", f"core.workers.{worker_name}", str(SLOTS_DIR / slot_id)],
         stdout=f,
         stderr=f,
-        start_new_session=True
+        start_new_session=True,
+        cwd=BASE_DIR
     )
+    
+    print(f"[SLOT_MANAGER] ✅ Worker PID {proc.pid} started for {slot_id}")
     return proc.pid
 
 def stop_runner(pid, slot_id):
+    """
+    Gracefully stop worker process.
+    Try SIGTERM first, then SIGKILL if needed.
+    """
+    if not pid:
+        return
+    
     try:
-        os.kill(pid, 9)
-        print(f"[SLOT_MANAGER] ⛔ Stopped runner for {slot_id}")
-    except Exception:
-        pass
+        # Try graceful shutdown first (SIGTERM)
+        os.kill(pid, signal.SIGTERM)
+        print(f"[SLOT_MANAGER] 🛑 Sent SIGTERM to worker {slot_id} (PID {pid})")
+        
+        # Wait up to 3 seconds for graceful shutdown
+        for i in range(30):  # 30 * 0.1s = 3 seconds
+            try:
+                os.kill(pid, 0)  # Check if process still exists
+                time.sleep(0.1)
+            except OSError:
+                # Process is dead - graceful shutdown succeeded
+                print(f"[SLOT_MANAGER] ✅ Worker {slot_id} stopped gracefully")
+                return
+        
+        # Still alive after 3 seconds - force kill
+        print(f"[SLOT_MANAGER] ⚠️ Worker {slot_id} did not stop gracefully, force killing...")
+        os.kill(pid, signal.SIGKILL)
+        print(f"[SLOT_MANAGER] ⛔ Force-killed worker {slot_id}")
+    except ProcessLookupError:
+        # Process already dead
+        print(f"[SLOT_MANAGER] ℹ️ Worker {slot_id} already stopped")
+    except PermissionError as e:
+        print(f"[SLOT_MANAGER] ❌ Permission denied stopping worker {slot_id}: {e}")
+    except Exception as e:
+        print(f"[SLOT_MANAGER] ⚠️ Error stopping worker {slot_id}: {e}")
 
 def within_startup_grace(state):
     started_at = state.get("started_at")
@@ -253,6 +336,67 @@ while True:
 
             # ---------------- TRUTH ENFORCEMENT ---------------- #
 
+            # ---------------- COMMAND HANDLING (MUST BE FIRST!) ---------------- #
+            # Process START/STOP commands BEFORE grace period checks
+            # Otherwise slots get stuck in STARTING state
+            
+            command = state.get("command")
+            
+            # Handle START command immediately
+            if command == "START":
+                if mode == "OBSERVER":
+                    print(f"[SLOT_MANAGER] 👁️ Observer mode — cannot start {slot_id}")
+                    state["command"] = None
+                    save_json(state_file, state)
+                    continue
+                else:
+                    if not is_process_running(pid):
+                        print(f"[SLOT_MANAGER] ▶ Starting worker for {slot_id} (via START command)")
+                        state["pid"] = start_runner(slot_id)
+                        state.update({
+                            "status": "RUNNING",
+                            "started_at": utcnow(),
+                            "last_heartbeat": None,
+                            "busy": True,
+                            "command": None
+                        })
+                        save_json(state_file, state)
+                        continue
+                    else:
+                        # Process already running, clear command to prevent reprocessing
+                        print(f"[SLOT_MANAGER] ℹ️ Worker for {slot_id} already running (PID {pid})")
+                        state["command"] = None
+                        save_json(state_file, state)
+                        continue
+            
+            # Handle STOP command immediately
+            elif command == "STOP":
+                if is_process_running(pid):
+                    stop_runner(pid, slot_id)
+                state.update({
+                    "status": "STOPPED",
+                    "pid": None,
+                    "busy": False,
+                    "command": None,
+                    "started_at": None,  # Clear temporal fields
+                    "last_heartbeat": None,
+                })
+                save_json(state_file, state)
+                continue
+            
+            # Handle PAUSE command immediately
+            elif command == "PAUSE":
+                if is_process_running(pid):
+                    stop_runner(pid, slot_id)
+                state.update({
+                    "status": "PAUSED",
+                    "pid": None,
+                    "command": None
+                })
+                save_json(state_file, state)
+                continue
+
+            # NOW check grace period for existing processes
             if status in ("RUNNING", "STARTING", "STOPPING"):
                 # --- STARTUP GRACE WINDOW ---
                 if within_startup_grace(state):
@@ -260,9 +404,20 @@ while True:
                     continue
 
                 # --- PID CHECK ---
-                # If command is START or status is STARTING, we are about to start it
-                if command == "START" or status == "STARTING":
-                    pass
+                # If status is STARTING but no command (legacy/race), try to start
+                if status == "STARTING" and not is_process_running(pid):
+                    print(f"[SLOT_MANAGER] ⚠️ UNEXPECTED: Implicit start for {slot_id} (no START command!)")
+                    print("[SLOT_MANAGER] This may indicate a race condition or API bug (report if recurring)")
+                    state["pid"] = start_runner(slot_id)
+                    state.update({
+                        "status": "RUNNING",
+                        "started_at": utcnow(),
+                        "last_heartbeat": None,
+                        "busy": True,
+                        "command": None
+                    })
+                    save_json(state_file, state)
+                    continue
                 elif not pid or not is_process_running(pid):
                     print(f"[SLOT_MANAGER] ❌ Dead/Missing PID for {slot_id} in {status}, marking STOPPED")
                     state.update({
@@ -309,52 +464,14 @@ while True:
                         })
                         save_json(state_file, state)
                         continue
-                except Exception:
+                except Exception as e:
+                    print(f"[SLOT_MANAGER] ⚠️ Heartbeat parse error for {slot_id}: {e}")
                     save_json(state_file, state)
                     continue
 
-            # ---------------- COMMAND HANDLING ---------------- #
-
-            # Treat STARTING state (without PID) as implicit START command
-            # This fixes cases where API sets status but not command
-            force_start = (status == "STARTING" and not is_process_running(pid))
-            
-            if command == "START" or force_start:
-                if mode == "OBSERVER":
-                    print(f"[SLOT_MANAGER] 👁️ Observer mode — cannot start {slot_id}")
-                    state["command"] = None
-                else:
-                    if not is_process_running(pid):
-                        state["pid"] = start_runner(slot_id)
-                    state.update({
-                        "status": "RUNNING",
-                        "started_at": utcnow(),
-                        "last_heartbeat": None,
-                        "busy": True,
-                        "command": None
-                    })
-
-            elif command == "PAUSE":
-                if is_process_running(pid):
-                    stop_runner(pid, slot_id)
-                state.update({
-                    "status": "PAUSED",
-                    "pid": None,
-                    "command": None
-                })
-
-            elif command == "STOP":
-                if is_process_running(pid):
-                    stop_runner(pid, slot_id)
-                state.update({
-                    "status": "STOPPED",
-                    "pid": None,
-                    "auto_resume": False,
-                    "command": None
-                })
-
 
             save_json(state_file, state)
+
 
         time.sleep(CHECK_INTERVAL)
     except Exception as e:

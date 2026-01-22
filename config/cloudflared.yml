@@ -1,0 +1,18 @@
+tunnel: leadforge-tunnel
+credentials-file: /Users/engyne/.cloudflared/cert.pem
+
+ingress:
+  # Frontend Application
+  - hostname: app.engyne.space
+    service: http://localhost:5173
+  
+  # API Backend
+  - hostname: api.engyne.space
+    service: http://localhost:8001
+    
+  # Admin Dashboard / Docs (if needed, routing to API for now or separate service)
+  - hostname: admin.engyne.space
+    service: http://localhost:8001
+
+  # Catch-all
+  - service: http_status:404

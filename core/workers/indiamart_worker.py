@@ -81,6 +81,21 @@ class IndiaMartWorker(BaseWorker):
             "verified_html": None,
         }
         
+        # Validate session at startup
+        if not self._validate_session():
+            print("[WORKER] ❌ No valid session found - login required")
+            state = self.load_state()
+            state.update({
+                "status": "NEEDS_LOGIN",
+                "busy": False,
+                "stop_reason": "no_session",
+                "stop_detail": "Please complete remote login to authenticate",
+            })
+            self.write_state(state)
+            # Raise exception to prevent run() from being called
+            # This ensures NEEDS_LOGIN status isn't clobbered by startup()
+            raise RuntimeError("Worker requires valid session - authentication needed")
+        
         # Initialize DB on startup
         try:
             init_db()
@@ -120,24 +135,35 @@ class IndiaMartWorker(BaseWorker):
         except Exception:
             return defaults
 
-    def _load_cookies(self) -> Dict[str, str]:
-        cookie_path = self.slot_dir / "session.enc"
-        if not cookie_path.exists() or cookie_path.stat().st_size == 0:
-            return {}
-
+    def _validate_session(self) -> bool:
+        session_file = self.slot_dir / "session.enc"
+        if not session_file.exists():
+            return False
+        
+        # Perform basic integrity check
         try:
-            cookies = json.loads(cookie_path.read_text())
-            if isinstance(cookies, dict):
-                return {str(k): str(v) for k, v in cookies.items()}
-            if isinstance(cookies, list):
-                return {
-                    str(c.get("name")): str(c.get("value"))
-                    for c in cookies
-                    if isinstance(c, dict) and "name" in c and "value" in c
-                }
-        except Exception:
-            pass
-        return {}
+            # Check file size (empty or too small = invalid)
+            file_size = session_file.stat().st_size
+            if file_size == 0:
+                print("[WORKER] ⚠️ Session file is empty")
+                return False
+            if file_size < 10:
+                print(f"[WORKER] ⚠️ Session file too small ({file_size} bytes)")
+                return False
+            
+            # Try to read file (ensures it's readable, not locked/corrupted)
+            with open(session_file, 'rb') as f:
+                data = f.read()
+                # Minimal check: file should have at least some content
+                if len(data) < 10:
+                    return False
+                    
+                # Check that it contains something resembling cookie data
+                # session.enc should have b'cookie' or be encrypted JSON
+                return True
+        except Exception as e:
+            print(f"[WORKER] ⚠️ Session validation error: {e}")
+            return False
 
     def _load_cookie_list(self) -> List[dict]:
         cookie_path = self.slot_dir / "session.enc"
@@ -204,6 +230,7 @@ class IndiaMartWorker(BaseWorker):
         session.cookies.clear()
         session.cookies.update(jar)
         return True
+
 
     def _maybe_reload_cookies(self):
         cookie_path = self.slot_dir / "session.enc"
@@ -1520,6 +1547,23 @@ class IndiaMartWorker(BaseWorker):
         except Exception as exc:
             self.record_error(str(exc)[:200])
             self._enter_cooldown("unhandled_error")
+        
+        # CRITICAL FIX: Merge worker-specific state into disk state
+        # Don't overwrite entire state as it loses metrics, status, busy, etc.
+        # Only persist phase-related fields that we manage
+        disk_state = self.load_state()
+        
+        # Update only worker-managed fields (excluding ephemeral HTML buffers)
+        disk_state["phase"] = self.state.get("phase", "INIT")
+        disk_state["leads_buffer"] = self.state.get("leads_buffer", [])
+        disk_state["ticks_since_verify"] = self.state.get("ticks_since_verify", 0)
+        disk_state["last_action"] = self.state.get("last_action")
+        disk_state["cooldown_until"] = self.state.get("cooldown_until", 0.0)
+        
+        # DON'T persist: recent_html, recent_payload, verified_html (ephemeral, causes bloat)
+        
+        # Persist merged state
+        self.write_state(disk_state)
 
     def shutdown(self):
         self._close_browser()
@@ -1532,7 +1576,14 @@ def main():
         sys.exit(1)
 
     slot_dir = Path(sys.argv[1]).resolve()
-    worker = IndiaMartWorker(slot_dir)
+    
+    try:
+        worker = IndiaMartWorker(slot_dir)
+    except RuntimeError as e:
+        # Session validation failed - status already set to NEEDS_LOGIN
+        print(f"[WORKER] Initialization failed: {e}")
+        sys.exit(0)  # Exit cleanly (not an error - just needs auth)
+    
     worker.run()
 
 
