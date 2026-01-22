@@ -1548,10 +1548,22 @@ class IndiaMartWorker(BaseWorker):
             self.record_error(str(exc)[:200])
             self._enter_cooldown("unhandled_error")
         
-        # CRITICAL FIX: Persist state after every tick to save phase transitions
-        # Without this, heartbeat() reloads from disk and loses in-memory changes
-        # This was causing infinite verification loop where phase never advanced
-        self.write_state(self.state)
+        # CRITICAL FIX: Merge worker-specific state into disk state
+        # Don't overwrite entire state as it loses metrics, status, busy, etc.
+        # Only persist phase-related fields that we manage
+        disk_state = self.load_state()
+        
+        # Update only worker-managed fields (excluding ephemeral HTML buffers)
+        disk_state["phase"] = self.state.get("phase", "INIT")
+        disk_state["leads_buffer"] = self.state.get("leads_buffer", [])
+        disk_state["ticks_since_verify"] = self.state.get("ticks_since_verify", 0)
+        disk_state["last_action"] = self.state.get("last_action")
+        disk_state["cooldown_until"] = self.state.get("cooldown_until", 0.0)
+        
+        # DON'T persist: recent_html, recent_payload, verified_html (ephemeral, causes bloat)
+        
+        # Persist merged state
+        self.write_state(disk_state)
 
     def shutdown(self):
         self._close_browser()
