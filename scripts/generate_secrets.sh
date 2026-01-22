@@ -1,7 +1,7 @@
 #!/bin/bash
 # Generate secure secrets for LeadForge deployment
 
-set -e
+set -euo pipefail
 
 echo "🔐 LeadForge Secret Generator"
 echo "================================"

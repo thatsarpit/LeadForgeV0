@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # Set restrictive file permissions (owner-only read/write)
 # Prevents other users on Mac Mini from reading sensitive slot data

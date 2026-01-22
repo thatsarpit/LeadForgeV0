@@ -61,6 +61,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Security Headers Middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # Basic CSP - allow self and engyne domains
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self' https://app.engyne.space https://api.engyne.space; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; "
+        "frame-src 'self' https://accounts.google.com;"
+    )
+    return response
+
+# Global Exception Handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print(f"🔥 UNHANDLED ERROR: {exc}")
+    import traceback
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal server error occurred. Please try again later."},
+    )
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 SLOTS_DIR = BASE_DIR / "slots"
 ENGINE_DIR = BASE_DIR / "core" / "engine"
@@ -116,7 +146,36 @@ def load_json(path: Path, default=None):
 
 
 def save_json(path: Path, data: dict):
-    path.write_text(json.dumps(data, indent=2))
+    """Atomic write to prevent corruption"""
+    import tempfile
+    import os
+    
+    # Ensure directory exists
+    path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Write to temp file in same directory
+    temp_fd, temp_path = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp"
+    )
+    
+    try:
+        with os.fdopen(temp_fd, 'w') as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        
+        # Atomic rename
+        os.replace(temp_path, path)
+    except Exception as e:
+        # Clean up temp file
+        try:
+            os.unlink(temp_path)
+        except Exception:
+            pass
+        print(f"❌ Error saving JSON to {path}: {e}")
+        raise
 
 
 def load_yaml(path: Path, default=None):

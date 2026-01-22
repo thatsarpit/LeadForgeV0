@@ -143,6 +143,18 @@ def start_runner(slot_id):
     # Ensure directory exists
     log_path.parent.mkdir(parents=True, exist_ok=True)
     
+    # Simple log rotation: If log > 5MB, rotate it
+    if log_path.exists() and log_path.stat().st_size > 5 * 1024 * 1024:
+        try:
+            # Keep one backup
+            backup_path = log_path.with_suffix(".log.old")
+            if backup_path.exists():
+                backup_path.unlink()
+            log_path.rename(backup_path)
+            print(f"[SLOT_MANAGER] 🔄 Rotated log for {slot_id}")
+        except Exception as e:
+            print(f"[SLOT_MANAGER] ⚠️ Failed to rotate log for {slot_id}: {e}")
+    
     # Open with line buffering for immediate visibility
     f = open(log_path, "a", buffering=1)
     _log_handles[slot_id] = f
