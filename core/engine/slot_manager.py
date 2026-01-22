@@ -362,6 +362,12 @@ while True:
                         })
                         save_json(state_file, state)
                         continue
+                    else:
+                        # Process already running, clear command to prevent reprocessing
+                        print(f"[SLOT_MANAGER] ℹ️ Worker for {slot_id} already running (PID {pid})")
+                        state["command"] = None
+                        save_json(state_file, state)
+                        continue
             
             # Handle STOP command immediately
             elif command == "STOP":
@@ -401,7 +407,7 @@ while True:
                 # If status is STARTING but no command (legacy/race), try to start
                 if status == "STARTING" and not is_process_running(pid):
                     print(f"[SLOT_MANAGER] ⚠️ UNEXPECTED: Implicit start for {slot_id} (no START command!)")
-                    print(f"[SLOT_MANAGER] This may indicate a race condition or API bug (report if recurring)")
+                    print("[SLOT_MANAGER] This may indicate a race condition or API bug (report if recurring)")
                     state["pid"] = start_runner(slot_id)
                     state.update({
                         "status": "RUNNING",

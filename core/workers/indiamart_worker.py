@@ -164,7 +164,6 @@ class IndiaMartWorker(BaseWorker):
         except Exception as e:
             print(f"[WORKER] ⚠️ Session validation error: {e}")
             return False
-        return False
 
     def _load_cookie_list(self) -> List[dict]:
         cookie_path = self.slot_dir / "session.enc"
@@ -232,31 +231,6 @@ class IndiaMartWorker(BaseWorker):
         session.cookies.update(jar)
         return True
 
-    def _validate_session(self) -> bool:
-        """
-        Validate that we have a valid session to work with.
-        Returns False if no cookies or session file is missing/empty.
-        """
-        cookie_path = self.slot_dir / "session.enc"
-        
-        # Check if session file exists and has content
-        if not cookie_path.exists() or cookie_path.stat().st_size == 0:
-            return False
-        
-        # Check if we actually loaded cookies
-        if not self.session.cookies:
-            return False
-        
-        # Look for critical IndiaMART session cookies
-        # IndiaMART typically uses cookies like im_auth, im_sid, etc.
-        cookie_dict = {c.name: c.value for c in self.session.cookies}
-        
-        # If we have ANY substantial cookies, consider it valid
-        # (More specific validation could check for im_auth specifically)
-        if len(cookie_dict) > 0:
-            return True
-        
-        return False
 
     def _maybe_reload_cookies(self):
         cookie_path = self.slot_dir / "session.enc"
