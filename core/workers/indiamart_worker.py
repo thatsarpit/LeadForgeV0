@@ -1547,6 +1547,11 @@ class IndiaMartWorker(BaseWorker):
         except Exception as exc:
             self.record_error(str(exc)[:200])
             self._enter_cooldown("unhandled_error")
+        
+        # CRITICAL FIX: Persist state after every tick to save phase transitions
+        # Without this, heartbeat() reloads from disk and loses in-memory changes
+        # This was causing infinite verification loop where phase never advanced
+        self.write_state(self.state)
 
     def shutdown(self):
         self._close_browser()
