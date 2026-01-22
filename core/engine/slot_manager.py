@@ -371,7 +371,9 @@ while True:
                     "status": "STOPPED",
                     "pid": None,
                     "busy": False,
-                    "command": None
+                    "command": None,
+                    "started_at": None,  # Clear temporal fields
+                    "last_heartbeat": None,
                 })
                 save_json(state_file, state)
                 continue
@@ -398,7 +400,8 @@ while True:
                 # --- PID CHECK ---
                 # If status is STARTING but no command (legacy/race), try to start
                 if status == "STARTING" and not is_process_running(pid):
-                    print(f"[SLOT_MANAGER] ▶ Starting worker for {slot_id} (implicit from STARTING status)")
+                    print(f"[SLOT_MANAGER] ⚠️ UNEXPECTED: Implicit start for {slot_id} (no START command!)")
+                    print(f"[SLOT_MANAGER] This may indicate a race condition or API bug (report if recurring)")
                     state["pid"] = start_runner(slot_id)
                     state.update({
                         "status": "RUNNING",
@@ -455,7 +458,8 @@ while True:
                         })
                         save_json(state_file, state)
                         continue
-                except Exception:
+                except Exception as e:
+                    print(f"[SLOT_MANAGER] ⚠️ Heartbeat parse error for {slot_id}: {e}")
                     save_json(state_file, state)
                     continue
 

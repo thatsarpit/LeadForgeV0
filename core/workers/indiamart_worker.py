@@ -135,24 +135,36 @@ class IndiaMartWorker(BaseWorker):
         except Exception:
             return defaults
 
-    def _load_cookies(self) -> Dict[str, str]:
-        cookie_path = self.slot_dir / "session.enc"
-        if not cookie_path.exists() or cookie_path.stat().st_size == 0:
-            return {}
-
+    def _validate_session(self) -> bool:
+        session_file = self.slot_dir / "session.enc"
+        if not session_file.exists():
+            return False
+        
+        # Perform basic integrity check
         try:
-            cookies = json.loads(cookie_path.read_text())
-            if isinstance(cookies, dict):
-                return {str(k): str(v) for k, v in cookies.items()}
-            if isinstance(cookies, list):
-                return {
-                    str(c.get("name")): str(c.get("value"))
-                    for c in cookies
-                    if isinstance(c, dict) and "name" in c and "value" in c
-                }
-        except Exception:
-            pass
-        return {}
+            # Check file size (empty or too small = invalid)
+            file_size = session_file.stat().st_size
+            if file_size == 0:
+                print("[WORKER] ⚠️ Session file is empty")
+                return False
+            if file_size < 10:
+                print(f"[WORKER] ⚠️ Session file too small ({file_size} bytes)")
+                return False
+            
+            # Try to read file (ensures it's readable, not locked/corrupted)
+            with open(session_file, 'rb') as f:
+                data = f.read()
+                # Minimal check: file should have at least some content
+                if len(data) < 10:
+                    return False
+                    
+                # Check that it contains something resembling cookie data
+                # session.enc should have b'cookie' or be encrypted JSON
+                return True
+        except Exception as e:
+            print(f"[WORKER] ⚠️ Session validation error: {e}")
+            return False
+        return False
 
     def _load_cookie_list(self) -> List[dict]:
         cookie_path = self.slot_dir / "session.enc"

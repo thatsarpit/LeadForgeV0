@@ -1904,6 +1904,8 @@ def start_slot(slot_id: str, user=Depends(get_current_user)):
             "status": "STARTING",  # Manager will transition to RUNNING
             "command": "START",    # Trigger for slot_manager to spawn runner
             "pid": None,           # Manager will set the real PID
+            "started_at": None,    # Clear stale timestamp to prevent grace period confusion
+            "last_heartbeat": None,
             "last_command": "START",
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
@@ -1946,7 +1948,25 @@ def stop_slot(slot_id: str, user=Depends(get_current_user)):
 @app.post("/api/slots/{slot_id}/restart")
 def restart_slot(slot_id: str, user=Depends(get_current_user)):
     ensure_allowed_slot(user, slot_id)
+    slot_dir = slot_path(slot_id)
+    state_file = slot_dir / "slot_state.json"
+    
+    # Issue STOP command
     stop_slot(slot_id, user)
+    
+    # Wait for slot to actually stop (prevents race condition)
+    # Without this, START command could be issued while worker is still running
+    print(f"[API] Waiting for {slot_id} to stop before restarting...")
+    for i in range(10):  # 10 second timeout
+        time.sleep(1)
+        state = load_json(state_file, {})
+        if state.get("status") == "STOPPED":
+            print(f"[API] {slot_id} stopped after {i+1}s, proceeding with start")
+            break
+    else:
+        # Timeout - log warning but proceed anyway
+        print(f"[API] ⚠️ Timeout waiting for {slot_id} to stop, forcing restart")
+    
     return start_slot(slot_id, user)
 
 
