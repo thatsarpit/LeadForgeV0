@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+# Set restrictive file permissions (owner-only read/write)
+# Prevents other users on Mac Mini from reading sensitive slot data
+umask 077
+
 # LeadForge Docker Entrypoint Script
 # Handles initialization and service routing
 

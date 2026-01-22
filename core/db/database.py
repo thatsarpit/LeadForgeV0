@@ -25,7 +25,14 @@ if USE_POSTGRES and DATABASE_URL:
     from sqlalchemy.orm import sessionmaker
     from api.models import Lead
     
-    engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=10, max_overflow=20)
+    engine = create_engine(
+        DATABASE_URL, 
+        pool_pre_ping=True,      # Test connections before using
+        pool_size=10,             # Base pool size
+        max_overflow=20,          # Max additional connections
+        pool_timeout=30,          # Fail fast if pool exhausted (30s)
+        pool_recycle=3600,        # Recycle connections every hour to prevent stale connections
+    )
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     
     logger.info(f"Using Postgres for leads database")

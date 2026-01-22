@@ -161,11 +161,39 @@ def start_runner(slot_id):
     return proc.pid
 
 def stop_runner(pid, slot_id):
+    """
+    Gracefully stop worker process.
+    Try SIGTERM first, then SIGKILL if needed.
+    """
+    if not pid:
+        return
+    
     try:
-        os.kill(pid, 9)
-        print(f"[SLOT_MANAGER] ⛔ Stopped runner for {slot_id}")
-    except Exception:
-        pass
+        # Try graceful shutdown first (SIGTERM)
+        os.kill(pid, signal.SIGTERM)
+        print(f"[SLOT_MANAGER] 🛑 Sent SIGTERM to worker {slot_id} (PID {pid})")
+        
+        # Wait up to 3 seconds for graceful shutdown
+        for i in range(30):  # 30 * 0.1s = 3 seconds
+            try:
+                os.kill(pid, 0)  # Check if process still exists
+                time.sleep(0.1)
+            except OSError:
+                # Process is dead - graceful shutdown succeeded
+                print(f"[SLOT_MANAGER] ✅ Worker {slot_id} stopped gracefully")
+                return
+        
+        # Still alive after 3 seconds - force kill
+        print(f"[SLOT_MANAGER] ⚠️ Worker {slot_id} did not stop gracefully, force killing...")
+        os.kill(pid, signal.SIGKILL)
+        print(f"[SLOT_MANAGER] ⛔ Force-killed worker {slot_id}")
+    except ProcessLookupError:
+        # Process already dead
+        print(f"[SLOT_MANAGER] ℹ️ Worker {slot_id} already stopped")
+    except PermissionError as e:
+        print(f"[SLOT_MANAGER] ❌ Permission denied stopping worker {slot_id}: {e}")
+    except Exception as e:
+        print(f"[SLOT_MANAGER] ⚠️ Error stopping worker {slot_id}: {e}")
 
 def within_startup_grace(state):
     started_at = state.get("started_at")
