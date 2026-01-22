@@ -92,8 +92,9 @@ class IndiaMartWorker(BaseWorker):
                 "stop_detail": "Please complete remote login to authenticate",
             })
             self.write_state(state)
-            self.running = False
-            return
+            # Raise exception to prevent run() from being called
+            # This ensures NEEDS_LOGIN status isn't clobbered by startup()
+            raise RuntimeError("Worker requires valid session - authentication needed")
         
         # Initialize DB on startup
         try:
@@ -1572,7 +1573,14 @@ def main():
         sys.exit(1)
 
     slot_dir = Path(sys.argv[1]).resolve()
-    worker = IndiaMartWorker(slot_dir)
+    
+    try:
+        worker = IndiaMartWorker(slot_dir)
+    except RuntimeError as e:
+        # Session validation failed - status already set to NEEDS_LOGIN
+        print(f"[WORKER] Initialization failed: {e}")
+        sys.exit(0)  # Exit cleanly (not an error - just needs auth)
+    
     worker.run()
 
 
