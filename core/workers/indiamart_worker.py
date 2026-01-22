@@ -81,6 +81,20 @@ class IndiaMartWorker(BaseWorker):
             "verified_html": None,
         }
         
+        # Validate session at startup
+        if not self._validate_session():
+            print("[WORKER] ❌ No valid session found - login required")
+            state = self.load_state()
+            state.update({
+                "status": "NEEDS_LOGIN",
+                "busy": False,
+                "stop_reason": "no_session",
+                "stop_detail": "Please complete remote login to authenticate",
+            })
+            self.write_state(state)
+            self.running = False
+            return
+        
         # Initialize DB on startup
         try:
             init_db()
@@ -204,6 +218,32 @@ class IndiaMartWorker(BaseWorker):
         session.cookies.clear()
         session.cookies.update(jar)
         return True
+
+    def _validate_session(self) -> bool:
+        """
+        Validate that we have a valid session to work with.
+        Returns False if no cookies or session file is missing/empty.
+        """
+        cookie_path = self.slot_dir / "session.enc"
+        
+        # Check if session file exists and has content
+        if not cookie_path.exists() or cookie_path.stat().st_size == 0:
+            return False
+        
+        # Check if we actually loaded cookies
+        if not self.session.cookies:
+            return False
+        
+        # Look for critical IndiaMART session cookies
+        # IndiaMART typically uses cookies like im_auth, im_sid, etc.
+        cookie_dict = {c.name: c.value for c in self.session.cookies}
+        
+        # If we have ANY substantial cookies, consider it valid
+        # (More specific validation could check for im_auth specifically)
+        if len(cookie_dict) > 0:
+            return True
+        
+        return False
 
     def _maybe_reload_cookies(self):
         cookie_path = self.slot_dir / "session.enc"

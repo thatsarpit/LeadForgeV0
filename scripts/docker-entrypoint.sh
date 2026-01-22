@@ -11,7 +11,12 @@ echo "[ENTRYPOINT] Environment: ${NODE_ENV:-development}"
 # Wait for database to be ready
 wait_for_db() {
     echo "[ENTRYPOINT] Waiting for database..."
-    until pg_isready -h "$(echo $DATABASE_URL | grep -oP '(?<=@)[^:]+' || echo 'postgres')" -U leadforge 2>/dev/null; do
+    
+    # Extract host from DATABASE_URL, fallback to 'postgres' (docker-compose service name)
+    DB_HOST=$(echo "$DATABASE_URL" | sed -n 's/.*@\([^:\/]*\).*/\1/p')
+    DB_HOST=${DB_HOST:-postgres}
+    
+    until pg_isready -h "$DB_HOST" -U leadforge 2>/dev/null; do
         echo "[ENTRYPOINT] Database not ready, waiting..."
         sleep 2
     done

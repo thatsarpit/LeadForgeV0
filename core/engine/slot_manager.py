@@ -58,13 +58,13 @@ def handle_shutdown(signum, frame):
         except Exception as e:
             print(f"[SLOT_MANAGER] ⚠️ Error closing handle for {slot_id}: {e}")
     _log_handles.clear()
-    release_pid_lock()
     sys.exit(0)
 
 signal.signal(signal.SIGTERM, handle_shutdown)
 signal.signal(signal.SIGINT, handle_shutdown)
 
-acquire_pid_lock()
+# In Docker, each container runs exactly one slot_manager
+# PID locks are unnecessary and can cause issues on restart
 print("[SLOT_MANAGER] ✅ Slot Manager stabilized and running")
 
 print("[SLOT_MANAGER] ✅ Slot Manager started")
@@ -79,7 +79,32 @@ def load_json(path, default):
         return default.copy()
 
 def save_json(path, data):
-    path.write_text(json.dumps(data, indent=2))
+    """Atomic write to prevent corruption from concurrent access"""
+    import tempfile
+    import os
+    
+    # Write to temp file in same directory (ensures same filesystem for atomic rename)
+    temp_fd, temp_path = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp"
+    )
+    
+    try:
+        with os.fdopen(temp_fd, 'w') as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())  # Ensure data is written to disk
+        
+        # Atomic rename (on POSIX systems)
+        os.replace(temp_path, path)
+    except Exception:
+        # Clean up temp file on error
+        try:
+            os.unlink(temp_path)
+        except Exception:
+            pass
+        raise
 
 def utcnow():
     return datetime.now(timezone.utc).isoformat().replace('+00:00', '')
@@ -98,8 +123,15 @@ _log_handles = {}
 
 def start_runner(slot_id):
     global _log_handles
-    print(f"[SLOT_MANAGER] ▶ Starting runner for {slot_id}")
-    log_path = SLOTS_DIR / slot_id / "runner.log"
+    print(f"[SLOT_MANAGER] ▶ Starting worker for {slot_id}")
+    
+    # Read state to get worker module name
+    state_file = SLOTS_DIR / slot_id / "slot_state.json"
+    state = load_json(state_file, {})
+    worker_name = state.get("worker", DEFAULT_SLOT_WORKER)
+    
+    # Set up logging to worker.log (visible on host via volume mount)
+    log_path = SLOTS_DIR / slot_id / "worker.log"
     
     # Close any existing handle for this slot to prevent leaks
     if slot_id in _log_handles:
@@ -115,12 +147,17 @@ def start_runner(slot_id):
     f = open(log_path, "a", buffering=1)
     _log_handles[slot_id] = f
     
+    # Spawn worker directly (no more runner.py indirection)
+    # This simplifies the architecture and makes PIDs clearer
     proc = subprocess.Popen(
-        [PYTHON_BIN, str(RUNNER_PATH), slot_id],
+        [PYTHON_BIN, "-m", f"core.workers.{worker_name}", str(SLOTS_DIR / slot_id)],
         stdout=f,
         stderr=f,
-        start_new_session=True
+        start_new_session=True,
+        cwd=BASE_DIR
     )
+    
+    print(f"[SLOT_MANAGER] ✅ Worker PID {proc.pid} started for {slot_id}")
     return proc.pid
 
 def stop_runner(pid, slot_id):
