@@ -336,6 +336,59 @@ while True:
 
             # ---------------- TRUTH ENFORCEMENT ---------------- #
 
+            # ---------------- COMMAND HANDLING (MUST BE FIRST!) ---------------- #
+            # Process START/STOP commands BEFORE grace period checks
+            # Otherwise slots get stuck in STARTING state
+            
+            command = state.get("command")
+            
+            # Handle START command immediately
+            if command == "START":
+                if mode == "OBSERVER":
+                    print(f"[SLOT_MANAGER] 👁️ Observer mode — cannot start {slot_id}")
+                    state["command"] = None
+                    save_json(state_file, state)
+                    continue
+                else:
+                    if not is_process_running(pid):
+                        print(f"[SLOT_MANAGER] ▶ Starting worker for {slot_id} (via START command)")
+                        state["pid"] = start_runner(slot_id)
+                        state.update({
+                            "status": "RUNNING",
+                            "started_at": utcnow(),
+                            "last_heartbeat": None,
+                            "busy": True,
+                            "command": None
+                        })
+                        save_json(state_file, state)
+                        continue
+            
+            # Handle STOP command immediately
+            elif command == "STOP":
+                if is_process_running(pid):
+                    stop_runner(pid, slot_id)
+                state.update({
+                    "status": "STOPPED",
+                    "pid": None,
+                    "busy": False,
+                    "command": None
+                })
+                save_json(state_file, state)
+                continue
+            
+            # Handle PAUSE command immediately
+            elif command == "PAUSE":
+                if is_process_running(pid):
+                    stop_runner(pid, slot_id)
+                state.update({
+                    "status": "PAUSED",
+                    "pid": None,
+                    "command": None
+                })
+                save_json(state_file, state)
+                continue
+
+            # NOW check grace period for existing processes
             if status in ("RUNNING", "STARTING", "STOPPING"):
                 # --- STARTUP GRACE WINDOW ---
                 if within_startup_grace(state):
@@ -343,9 +396,19 @@ while True:
                     continue
 
                 # --- PID CHECK ---
-                # If command is START or status is STARTING, we are about to start it
-                if command == "START" or status == "STARTING":
-                    pass
+                # If status is STARTING but no command (legacy/race), try to start
+                if status == "STARTING" and not is_process_running(pid):
+                    print(f"[SLOT_MANAGER] ▶ Starting worker for {slot_id} (implicit from STARTING status)")
+                    state["pid"] = start_runner(slot_id)
+                    state.update({
+                        "status": "RUNNING",
+                        "started_at": utcnow(),
+                        "last_heartbeat": None,
+                        "busy": True,
+                        "command": None
+                    })
+                    save_json(state_file, state)
+                    continue
                 elif not pid or not is_process_running(pid):
                     print(f"[SLOT_MANAGER] ❌ Dead/Missing PID for {slot_id} in {status}, marking STOPPED")
                     state.update({
@@ -396,48 +459,9 @@ while True:
                     save_json(state_file, state)
                     continue
 
-            # ---------------- COMMAND HANDLING ---------------- #
-
-            # Treat STARTING state (without PID) as implicit START command
-            # This fixes cases where API sets status but not command
-            force_start = (status == "STARTING" and not is_process_running(pid))
-            
-            if command == "START" or force_start:
-                if mode == "OBSERVER":
-                    print(f"[SLOT_MANAGER] 👁️ Observer mode — cannot start {slot_id}")
-                    state["command"] = None
-                else:
-                    if not is_process_running(pid):
-                        state["pid"] = start_runner(slot_id)
-                    state.update({
-                        "status": "RUNNING",
-                        "started_at": utcnow(),
-                        "last_heartbeat": None,
-                        "busy": True,
-                        "command": None
-                    })
-
-            elif command == "PAUSE":
-                if is_process_running(pid):
-                    stop_runner(pid, slot_id)
-                state.update({
-                    "status": "PAUSED",
-                    "pid": None,
-                    "command": None
-                })
-
-            elif command == "STOP":
-                if is_process_running(pid):
-                    stop_runner(pid, slot_id)
-                state.update({
-                    "status": "STOPPED",
-                    "pid": None,
-                    "auto_resume": False,
-                    "command": None
-                })
-
 
             save_json(state_file, state)
+
 
         time.sleep(CHECK_INTERVAL)
     except Exception as e:
