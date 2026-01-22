@@ -1837,24 +1837,21 @@ def start_slot(slot_id: str, user=Depends(get_current_user)):
     if not state.get("mode"):
         state["mode"] = DEFAULT_SLOT_MODE
 
-    process = subprocess.Popen(
-        ["python3", str(ENGINE_DIR / "runner.py"), slot_id],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
+    # Don't spawn runner here - let the slot_manager handle it
+    # This fixes the Docker container isolation issue where API spawns
+    # a process that the manager container can't see
     state.update(
         {
-            "status": "RUNNING",
-            "pid": process.pid,
+            "status": "STARTING",  # Manager will transition to RUNNING
+            "command": "START",    # Trigger for slot_manager to spawn runner
+            "pid": None,           # Manager will set the real PID
             "last_command": "START",
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
     )
 
     save_json(state_file, state)
-    return {"status": "started", "pid": process.pid}
+    return {"status": "starting"}
 
 
 @app.post("/slots/{slot_id}/stop")
@@ -1868,27 +1865,22 @@ def stop_slot(slot_id: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Slot not found")
 
     state = load_json(state_file, {})
-    pid = state.get("pid")
+    
+    if state.get("status") == "STOPPED":
+        return {"status": "already_stopped"}
 
-    if not pid:
-        return {"status": "not_running"}
-
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except Exception:
-        pass
-
+    # Don't kill PID here - the process runs in the manager container
+    # Let the slot_manager handle the actual process termination
     state.update(
         {
-            "status": "STOPPED",
-            "pid": None,
+            "command": "STOP",  # Trigger for slot_manager to stop runner
             "last_command": "STOP",
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
     )
 
     save_json(state_file, state)
-    return {"status": "stopped"}
+    return {"status": "stopping"}
 
 
 @app.post("/slots/{slot_id}/restart")
