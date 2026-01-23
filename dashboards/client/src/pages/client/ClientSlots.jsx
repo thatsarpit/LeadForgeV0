@@ -4,79 +4,31 @@ import { useOutletContext } from "react-router-dom";
 import {
   fetchSlotClientLimits,
   fetchSlotConfig,
+  fetchSlotLoginStatus,
   fetchSlotQuality,
-  fetchWhatsAppQr,
-  fetchWhatsAppStatus,
-  connectWhatsApp,
-  disconnectWhatsApp,
   updateSlotClientLimits,
   updateSlotConfig,
   updateSlotQuality,
 } from "../../services/api";
 import { COUNTRY_ALIAS_OVERRIDES, COUNTRY_OPTIONS } from "../../services/countries.js";
 
-const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-
 const DEFAULT_PREFS = {
   leadTargetEnabled: false,
-  maxRuntimeEnabled: false,
-  windowEnabled: false,
   leadTarget: 120,
-  maxRuntime: 2,
-  windowStart: "09:00",
-  windowEnd: "18:00",
-  days: ["mon", "tue", "wed", "thu", "fri"],
-  timezone: LOCAL_TZ,
   keywords: "",
   exclusions: "",
   countries: [],
+  maxLeadAgeSeconds: 30,
+  zeroSecondOnly: false,
+  allowUnknownAge: false,
+  requireMobileAvailable: false,
+  requireMobileVerified: false,
+  requireEmailAvailable: false,
+  requireEmailVerified: false,
+  requireWhatsAppAvailable: false,
   qualityBias: 50,
-  whatsappEnabled: false,
-  whatsappSession: "",
-  whatsappTemplate: "",
-  whatsappMaxPerHour: 20,
-  whatsappMinDelay: 25,
-  whatsappStopOnReply: false,
-  indiamartMessageEnabled: false,
-  indiamartMessageTemplate: "",
-  indiamartMessageMaxPerDay: 20,
-  indiamartMessageMinDelay: 30,
-};
-
-const TIMEZONES =
-  typeof Intl.supportedValuesOf === "function"
-    ? Intl.supportedValuesOf("timeZone")
-    : [LOCAL_TZ];
-
-const DAY_OPTIONS = [
-  { key: "mon", label: "Mon" },
-  { key: "tue", label: "Tue" },
-  { key: "wed", label: "Wed" },
-  { key: "thu", label: "Thu" },
-  { key: "fri", label: "Fri" },
-  { key: "sat", label: "Sat" },
-  { key: "sun", label: "Sun" },
-];
-
-const DAY_ALIASES = {
-  mon: "mon",
-  monday: "mon",
-  tue: "tue",
-  tues: "tue",
-  tuesday: "tue",
-  wed: "wed",
-  weds: "wed",
-  wednesday: "wed",
-  thu: "thu",
-  thur: "thu",
-  thurs: "thu",
-  thursday: "thu",
-  fri: "fri",
-  friday: "fri",
-  sat: "sat",
-  saturday: "sat",
-  sun: "sun",
-  sunday: "sun",
+  minMemberMonths: 0,
+  maxAgeHours: 48,
 };
 
 const normalizeToken = (value) =>
@@ -84,15 +36,6 @@ const normalizeToken = (value) =>
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ");
-
-const resolveDays = (value) => {
-  if (!value) return DEFAULT_PREFS.days;
-  const tokens = Array.isArray(value) ? value : String(value).split(/,|\s/);
-  const normalized = tokens
-    .map((token) => DAY_ALIASES[String(token).toLowerCase().trim()])
-    .filter(Boolean);
-  return normalized.length ? Array.from(new Set(normalized)) : DEFAULT_PREFS.days;
-};
 
 const countrySynonyms = (country) => {
   const base = [country.code, country.name];
@@ -137,10 +80,9 @@ export default function ClientSlots() {
   const [saving, setSaving] = useState(false);
   const [saveState, setSaveState] = useState("");
   const [countrySearch, setCountrySearch] = useState("");
-  const [whatsappStatus, setWhatsAppStatus] = useState(null);
-  const [whatsappQr, setWhatsAppQr] = useState("");
-  const [whatsappLoading, setWhatsAppLoading] = useState(false);
-  const [whatsappError, setWhatsAppError] = useState("");
+  const [loginStatus, setLoginStatus] = useState(null);
+  const [loginStatusLoading, setLoginStatusLoading] = useState(false);
+  const [loginStatusError, setLoginStatusError] = useState("");
 
   useEffect(() => {
     if (!selectedSlotId && slots.length > 0) {
@@ -201,15 +143,8 @@ export default function ClientSlots() {
       const quality = qualityResult.status === "fulfilled" ? qualityResult.value : {};
       const config = configResult.status === "fulfilled" ? configResult.value?.config || {} : {};
 
-      const maxClicks = Number(limits.max_clicks_per_run ?? 0);
-      const maxRunMinutes = Number(limits.max_run_minutes ?? 0);
+      const maxClicks = Number(limits.max_verified_leads_per_cycle ?? 0);
       const leadTargetEnabled = maxClicks > 0;
-      const maxRuntimeEnabled = maxRunMinutes > 0;
-      const schedule = config.client_schedule || {};
-      const windowEnabled =
-        typeof schedule.enabled === "boolean"
-          ? schedule.enabled
-          : Boolean(schedule.window_start || schedule.window_end);
       const keywords = Array.isArray(config.search_terms)
         ? config.search_terms.join("\n")
         : typeof config.search_terms === "string"
@@ -221,36 +156,23 @@ export default function ClientSlots() {
           ? config.exclude_terms
           : "";
 
-      setFormState({
-        leadTargetEnabled,
-        maxRuntimeEnabled,
-        windowEnabled,
-        leadTarget: leadTargetEnabled ? maxClicks : DEFAULT_PREFS.leadTarget,
-        maxRuntime: maxRuntimeEnabled
-          ? Math.round((maxRunMinutes / 60) * 10) / 10
-          : DEFAULT_PREFS.maxRuntime,
-        windowStart: schedule.window_start || DEFAULT_PREFS.windowStart,
-        windowEnd: schedule.window_end || DEFAULT_PREFS.windowEnd,
-        days: resolveDays(schedule.days),
-        timezone: schedule.timezone || DEFAULT_PREFS.timezone,
-        keywords,
-        exclusions,
-        countries: resolveSelectedCountries(config),
-        qualityBias: Number(quality.quality_level ?? DEFAULT_PREFS.qualityBias),
-        whatsappEnabled: Boolean(config.whatsapp_enabled),
-        whatsappSession: String(config.whatsapp_waha_session || ""),
-        whatsappTemplate: String(config.whatsapp_template || ""),
-        whatsappMaxPerHour: Number(config.whatsapp_max_per_hour ?? DEFAULT_PREFS.whatsappMaxPerHour),
-        whatsappMinDelay: Number(config.whatsapp_min_delay_s ?? DEFAULT_PREFS.whatsappMinDelay),
-        whatsappStopOnReply: Boolean(config.whatsapp_stop_on_reply),
-        indiamartMessageEnabled: Boolean(config.indiamart_message_enabled),
-        indiamartMessageTemplate: String(config.indiamart_message_template || ""),
-        indiamartMessageMaxPerDay: Number(
-          config.indiamart_message_max_per_day ?? DEFAULT_PREFS.indiamartMessageMaxPerDay
-        ),
-        indiamartMessageMinDelay: Number(
-          config.indiamart_message_min_delay_s ?? DEFAULT_PREFS.indiamartMessageMinDelay
-        ),
+        setFormState({
+          leadTargetEnabled,
+          leadTarget: leadTargetEnabled ? maxClicks : DEFAULT_PREFS.leadTarget,
+          keywords,
+          exclusions,
+          countries: resolveSelectedCountries(config),
+          maxLeadAgeSeconds: 30,
+          zeroSecondOnly: false,
+          allowUnknownAge: false,
+          requireMobileAvailable: Boolean(config.require_mobile_available),
+          requireMobileVerified: Boolean(config.require_mobile_verified),
+          requireEmailAvailable: Boolean(config.require_email_available),
+          requireEmailVerified: Boolean(config.require_email_verified),
+          requireWhatsAppAvailable: Boolean(config.require_whatsapp_available),
+          qualityBias: Number(quality.quality_level ?? DEFAULT_PREFS.qualityBias),
+          minMemberMonths: Number(quality.min_member_months ?? 0),
+          maxAgeHours: Number(quality.max_age_hours ?? 48),
       });
 
       if (
@@ -271,79 +193,29 @@ export default function ClientSlots() {
     };
   }, [selectedSlot?.slot_id, selectedSlot?.node_id]);
 
+  const refreshLoginStatus = async () => {
+    if (!selectedSlot) return;
+    setLoginStatusLoading(true);
+    setLoginStatusError("");
+    try {
+      const status = await fetchSlotLoginStatus(selectedSlot.slot_id, selectedSlot.node_id);
+      setLoginStatus(status);
+    } catch (err) {
+      setLoginStatusError("Unable to check IndiaMart login.");
+    } finally {
+      setLoginStatusLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!selectedSlot) {
-      setWhatsAppStatus(null);
-      setWhatsAppQr("");
-      setWhatsAppError("");
+      setLoginStatus(null);
+      setLoginStatusError("");
+      setLoginStatusLoading(false);
       return;
     }
-    let alive = true;
-    const loadWhatsApp = async () => {
-      setWhatsAppLoading(true);
-      setWhatsAppError("");
-      try {
-        const status = await fetchWhatsAppStatus(selectedSlot.slot_id, selectedSlot.node_id);
-        if (!alive) return;
-        setWhatsAppStatus(status);
-      } catch (err) {
-        if (!alive) return;
-        setWhatsAppError("WhatsApp service is not reachable yet.");
-      } finally {
-        if (alive) setWhatsAppLoading(false);
-      }
-    };
-    loadWhatsApp();
-    return () => {
-      alive = false;
-    };
+    refreshLoginStatus();
   }, [selectedSlot?.slot_id, selectedSlot?.node_id]);
-
-  const handleWhatsAppConnect = async () => {
-    if (!selectedSlot) return;
-    setWhatsAppLoading(true);
-    setWhatsAppError("");
-    try {
-      await connectWhatsApp(selectedSlot.slot_id, selectedSlot.node_id);
-      const qr = await fetchWhatsAppQr(selectedSlot.slot_id, selectedSlot.node_id);
-      setWhatsAppQr(normalizeQr(qr.qr || ""));
-      const status = await fetchWhatsAppStatus(selectedSlot.slot_id, selectedSlot.node_id);
-      setWhatsAppStatus(status);
-    } catch (err) {
-      setWhatsAppError("Unable to start WhatsApp session.");
-    } finally {
-      setWhatsAppLoading(false);
-    }
-  };
-
-  const handleWhatsAppDisconnect = async () => {
-    if (!selectedSlot) return;
-    setWhatsAppLoading(true);
-    setWhatsAppError("");
-    try {
-      await disconnectWhatsApp(selectedSlot.slot_id, selectedSlot.node_id);
-      setWhatsAppStatus(null);
-      setWhatsAppQr("");
-    } catch (err) {
-      setWhatsAppError("Unable to disconnect WhatsApp session.");
-    } finally {
-      setWhatsAppLoading(false);
-    }
-  };
-
-  const handleWhatsAppQr = async () => {
-    if (!selectedSlot) return;
-    setWhatsAppLoading(true);
-    setWhatsAppError("");
-    try {
-      const qr = await fetchWhatsAppQr(selectedSlot.slot_id, selectedSlot.node_id);
-      setWhatsAppQr(normalizeQr(qr.qr || ""));
-    } catch (err) {
-      setWhatsAppError("QR not available yet.");
-    } finally {
-      setWhatsAppLoading(false);
-    }
-  };
 
   const updatePref = (field, value) => {
     setFormState((prev) => ({
@@ -357,14 +229,6 @@ export default function ClientSlots() {
       ...prev,
       [field]: !prev[field],
     }));
-  };
-
-  const normalizeQr = (qr) => {
-    if (!qr) return "";
-    if (qr.startsWith("data:image") || qr.startsWith("http")) {
-      return qr;
-    }
-    return `data:image/png;base64,${qr}`;
   };
 
   const parseList = (value) =>
@@ -388,16 +252,17 @@ export default function ClientSlots() {
     const nodeId = selectedSlot.node_id;
 
     const limitsPayload = {
-      max_clicks_per_run: formState.leadTargetEnabled
+      max_verified_leads_per_cycle: formState.leadTargetEnabled
         ? Number(formState.leadTarget || 0)
         : 0,
-      max_run_minutes: formState.maxRuntimeEnabled
-        ? Math.round(Number(formState.maxRuntime || 0) * 60)
-        : 0,
+      max_run_minutes: 0,
     };
 
     const qualityPayload = {
       quality_level: Number(formState.qualityBias || 0),
+      min_member_months: Number(formState.minMemberMonths || 0),
+      max_age_hours: Number(formState.maxAgeHours || 48),
+      max_verified_leads_per_cycle: Number(formState.leadTarget || 0),
     };
 
     const configPayload = {
@@ -405,23 +270,14 @@ export default function ClientSlots() {
       exclude_terms: parseList(formState.exclusions || ""),
       country: expandCountrySelection(formState.countries || []),
       client_regions: formState.countries || [],
-      whatsapp_enabled: Boolean(formState.whatsappEnabled),
-      whatsapp_waha_session: (formState.whatsappSession || selectedSlot?.slot_id || "").trim(),
-      whatsapp_template: formState.whatsappTemplate || "",
-      whatsapp_max_per_hour: Number(formState.whatsappMaxPerHour || 0),
-      whatsapp_min_delay_s: Number(formState.whatsappMinDelay || 0),
-      whatsapp_stop_on_reply: Boolean(formState.whatsappStopOnReply),
-      indiamart_message_enabled: Boolean(formState.indiamartMessageEnabled),
-      indiamart_message_template: formState.indiamartMessageTemplate || "",
-      indiamart_message_max_per_day: Number(formState.indiamartMessageMaxPerDay || 0),
-      indiamart_message_min_delay_s: Number(formState.indiamartMessageMinDelay || 0),
-      client_schedule: {
-        enabled: formState.windowEnabled,
-        window_start: formState.windowEnabled ? formState.windowStart : "",
-        window_end: formState.windowEnabled ? formState.windowEnd : "",
-        days: formState.days,
-        timezone: formState.timezone,
-      },
+      max_lead_age_seconds: 30,
+      zero_second_only: false,
+      allow_unknown_age: false,
+      require_mobile_available: Boolean(formState.requireMobileAvailable),
+      require_mobile_verified: Boolean(formState.requireMobileVerified),
+      require_email_available: Boolean(formState.requireEmailAvailable),
+      require_email_verified: Boolean(formState.requireEmailVerified),
+      require_whatsapp_available: Boolean(formState.requireWhatsAppAvailable),
     };
 
     try {
@@ -558,14 +414,24 @@ export default function ClientSlots() {
                   : "Choose a slot to view controls."}
               </div>
             </div>
-            <button
-              className="engyne-btn engyne-btn--ghost engyne-btn--small"
-              onClick={handleRemoteLogin}
-              disabled={!selectedSlot}
-            >
-              <Monitor size={14} />
-              Remote login
-            </button>
+            <div className="engyne-inline-actions">
+              <button
+                className="engyne-btn engyne-btn--ghost engyne-btn--small"
+                onClick={refreshLoginStatus}
+                disabled={!selectedSlot || loginStatusLoading}
+              >
+                <RefreshCcw size={14} />
+                Check login
+              </button>
+              <button
+                className="engyne-btn engyne-btn--ghost engyne-btn--small"
+                onClick={handleRemoteLogin}
+                disabled={!selectedSlot}
+              >
+                <Monitor size={14} />
+                Remote login
+              </button>
+            </div>
           </div>
 
           {selectedSlot ? (
@@ -579,7 +445,42 @@ export default function ClientSlots() {
               <div className="engyne-detail-card">
                 <div className="engyne-detail-label">Leads parsed</div>
                 <div className="engyne-detail-value">
-                  {Number(selectedSlot.metrics?.leads_parsed || 0)}
+                  {(() => {
+                    const total = Number(selectedSlot.metrics?.leads_parsed || 0);
+                    const runStart = Number(selectedSlot.run_leads_start || 0);
+                    const delta = Math.max(0, total - runStart);
+                    return delta;
+                  })()}
+                </div>
+              </div>
+              <div className="engyne-detail-card">
+                <div className="engyne-detail-label">Clicks / Verified (run)</div>
+                <div className="engyne-detail-value">
+                  {(() => {
+                    const clicked =
+                      Number(selectedSlot.metrics?.clicked_total || 0) -
+                      Number(selectedSlot.run_clicked_start || 0);
+                    const verified =
+                      Number(selectedSlot.metrics?.verified_total || 0) -
+                      Number(selectedSlot.run_verified_start || 0);
+                    return `${verified}/${clicked || 0}`;
+                  })()}
+                </div>
+              </div>
+              <div className="engyne-detail-card">
+                <div className="engyne-detail-label">Status</div>
+                <div className="engyne-detail-value">{selectedSlot.status || "UNKNOWN"}</div>
+              </div>
+              <div className="engyne-detail-card">
+                <div className="engyne-detail-label">Stop reason</div>
+                <div className="engyne-detail-value">{selectedSlot.stop_reason || "—"}</div>
+              </div>
+              <div className="engyne-detail-card">
+                <div className="engyne-detail-label">Last exit code</div>
+                <div className="engyne-detail-value">
+                  {selectedSlot.last_exit_code !== undefined && selectedSlot.last_exit_code !== null
+                    ? selectedSlot.last_exit_code
+                    : "—"}
                 </div>
               </div>
               <div className="engyne-detail-card">
@@ -587,6 +488,26 @@ export default function ClientSlots() {
                 <div className="engyne-detail-value">
                   {selectedSlot.last_heartbeat ? "Live" : "None"}
                 </div>
+              </div>
+              <div className="engyne-detail-card">
+                <div className="engyne-detail-label">IndiaMart login</div>
+                <div className="engyne-detail-value">
+                  {loginStatusLoading
+                    ? "Checking..."
+                    : loginStatus?.status === "logged_in"
+                      ? "Logged in"
+                      : loginStatus?.status === "logged_out"
+                        ? "Login required"
+                        : "Unknown"}
+                </div>
+                {loginStatus?.checked_at && (
+                  <div className="engyne-detail-label">
+                    Checked {new Date(loginStatus.checked_at).toLocaleString()}
+                  </div>
+                )}
+                {loginStatusError && (
+                  <div className="engyne-alert engyne-alert--danger">{loginStatusError}</div>
+                )}
               </div>
             </div>
           ) : (
@@ -622,39 +543,9 @@ export default function ClientSlots() {
                     {formState.leadTargetEnabled ? "On" : "Off"}
                   </span>
                 </button>
-                <button
-                  className="engyne-toggle"
-                  type="button"
-                  onClick={() => togglePref("maxRuntimeEnabled")}
-                  disabled={fieldsDisabled}
-                >
-                  <span>Max runtime cap</span>
-                  <span
-                    className={
-                      formState.maxRuntimeEnabled ? "engyne-toggle-pill is-on" : "engyne-toggle-pill"
-                    }
-                  >
-                    {formState.maxRuntimeEnabled ? "On" : "Off"}
-                  </span>
-                </button>
-                <button
-                  className="engyne-toggle"
-                  type="button"
-                  onClick={() => togglePref("windowEnabled")}
-                  disabled={fieldsDisabled}
-                >
-                  <span>Run window schedule</span>
-                  <span
-                    className={
-                      formState.windowEnabled ? "engyne-toggle-pill is-on" : "engyne-toggle-pill"
-                    }
-                  >
-                    {formState.windowEnabled ? "On" : "Off"}
-                  </span>
-                </button>
               </div>
               <label className="engyne-field">
-                <span>Lead target</span>
+                <span>Max verified leads per cycle</span>
                 <input
                   className="engyne-input"
                   type="number"
@@ -663,102 +554,6 @@ export default function ClientSlots() {
                   onChange={(event) => updatePref("leadTarget", Number(event.target.value))}
                   disabled={fieldsDisabled || !formState.leadTargetEnabled}
                 />
-              </label>
-              <label className="engyne-field">
-                <span>Max runtime (hrs)</span>
-                <input
-                  className="engyne-input"
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  value={formState.maxRuntime}
-                  onChange={(event) => updatePref("maxRuntime", Number(event.target.value))}
-                  disabled={fieldsDisabled || !formState.maxRuntimeEnabled}
-                />
-              </label>
-              <label className="engyne-field">
-                <span>Run window start</span>
-                <input
-                  className="engyne-input"
-                  type="time"
-                  value={formState.windowStart}
-                  onChange={(event) => updatePref("windowStart", event.target.value)}
-                  disabled={fieldsDisabled || !formState.windowEnabled}
-                />
-              </label>
-              <label className="engyne-field">
-                <span>Run window end</span>
-                <input
-                  className="engyne-input"
-                  type="time"
-                  value={formState.windowEnd}
-                  onChange={(event) => updatePref("windowEnd", event.target.value)}
-                  disabled={fieldsDisabled || !formState.windowEnabled}
-                />
-              </label>
-              <div className="engyne-field">
-                <span>Active days</span>
-                <div className="engyne-inline-actions">
-                  <button
-                    className="engyne-btn engyne-btn--ghost engyne-btn--small"
-                    type="button"
-                    disabled={fieldsDisabled || !formState.windowEnabled}
-                    onClick={() =>
-                      updatePref(
-                        "days",
-                        DAY_OPTIONS.filter((day) => ["mon", "tue", "wed", "thu", "fri"].includes(day.key)).map((day) => day.key)
-                      )
-                    }
-                  >
-                    Weekdays
-                  </button>
-                  <button
-                    className="engyne-btn engyne-btn--ghost engyne-btn--small"
-                    type="button"
-                    disabled={fieldsDisabled || !formState.windowEnabled}
-                    onClick={() => updatePref("days", DAY_OPTIONS.map((day) => day.key))}
-                  >
-                    All days
-                  </button>
-                  <button
-                    className="engyne-btn engyne-btn--ghost engyne-btn--small"
-                    type="button"
-                    disabled={fieldsDisabled || !formState.windowEnabled}
-                    onClick={() => updatePref("days", [])}
-                  >
-                    Clear
-                  </button>
-                </div>
-                <div className="engyne-checklist">
-                  {DAY_OPTIONS.map((day) => (
-                    <label key={day.key} className="engyne-check">
-                      <input
-                        type="checkbox"
-                        disabled={fieldsDisabled || !formState.windowEnabled}
-                        checked={formState.days.includes(day.key)}
-                        onChange={() =>
-                          updatePref("days", toggleListItem(formState.days, day.key))
-                        }
-                      />
-                      <span>{day.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <label className="engyne-field">
-                <span>Timezone</span>
-                <select
-                  className="engyne-input"
-                  value={formState.timezone}
-                  onChange={(event) => updatePref("timezone", event.target.value)}
-                  disabled={fieldsDisabled || !formState.windowEnabled}
-                >
-                  {TIMEZONES.map((tz) => (
-                    <option key={tz} value={tz}>
-                      {tz}
-                    </option>
-                  ))}
-                </select>
               </label>
             </div>
           </div>
@@ -773,6 +568,100 @@ export default function ClientSlots() {
               </div>
             </div>
             <div className="engyne-form-fields">
+              <div className="engyne-muted">
+                Lead age is fixed to ≤ 30 seconds; unknown ages are ignored. Only mobile/email/WhatsApp requirements remain configurable below.
+              </div>
+              <div className="engyne-toggle-list">
+                <button
+                  className="engyne-toggle"
+                  type="button"
+                  onClick={() => togglePref("requireMobileAvailable")}
+                  disabled={fieldsDisabled}
+                >
+                  <span>Require mobile available</span>
+                  <span
+                    className={
+                      formState.requireMobileAvailable
+                        ? "engyne-toggle-pill is-on"
+                        : "engyne-toggle-pill"
+                    }
+                  >
+                    {formState.requireMobileAvailable ? "On" : "Off"}
+                  </span>
+                </button>
+                <button
+                  className="engyne-toggle"
+                  type="button"
+                  onClick={() => togglePref("requireMobileVerified")}
+                  disabled={fieldsDisabled}
+                >
+                  <span>Require mobile verified</span>
+                  <span
+                    className={
+                      formState.requireMobileVerified
+                        ? "engyne-toggle-pill is-on"
+                        : "engyne-toggle-pill"
+                    }
+                  >
+                    {formState.requireMobileVerified ? "On" : "Off"}
+                  </span>
+                </button>
+                <button
+                  className="engyne-toggle"
+                  type="button"
+                  onClick={() => togglePref("requireEmailAvailable")}
+                  disabled={fieldsDisabled}
+                >
+                  <span>Require email available</span>
+                  <span
+                    className={
+                      formState.requireEmailAvailable
+                        ? "engyne-toggle-pill is-on"
+                        : "engyne-toggle-pill"
+                    }
+                  >
+                    {formState.requireEmailAvailable ? "On" : "Off"}
+                  </span>
+                </button>
+                <button
+                  className="engyne-toggle"
+                  type="button"
+                  onClick={() => togglePref("requireEmailVerified")}
+                  disabled={fieldsDisabled}
+                >
+                  <span>Require email verified</span>
+                  <span
+                    className={
+                      formState.requireEmailVerified
+                        ? "engyne-toggle-pill is-on"
+                        : "engyne-toggle-pill"
+                    }
+                  >
+                    {formState.requireEmailVerified ? "On" : "Off"}
+                  </span>
+                </button>
+                <button
+                  className="engyne-toggle"
+                  type="button"
+                  onClick={() => togglePref("requireWhatsAppAvailable")}
+                  disabled={fieldsDisabled}
+                >
+                  <span>Require WhatsApp available</span>
+                  <span
+                    className={
+                      formState.requireWhatsAppAvailable
+                        ? "engyne-toggle-pill is-on"
+                        : "engyne-toggle-pill"
+                    }
+                  >
+                    {formState.requireWhatsAppAvailable ? "On" : "Off"}
+                  </span>
+                </button>
+              </div>
+              <div className="engyne-muted">
+                Contact availability is derived from Buyer Details &rarr; Available icons (tooltip text
+                like “Mobile Number is Verified”, “Email ID Available”, “WhatsApp Available”).
+              </div>
               <label className="engyne-field">
                 <span>Keywords</span>
                 <textarea
@@ -856,185 +745,6 @@ export default function ClientSlots() {
                   <span>Higher quality</span>
                 </div>
               </label>
-            </div>
-          </div>
-
-          <div className="engyne-divider" />
-
-          <div className="engyne-form-grid">
-            <div>
-              <div className="engyne-kicker">Messaging & automation</div>
-              <div className="engyne-muted">
-                Connect WhatsApp and configure IndiaMart first-message delivery.
-              </div>
-            </div>
-            <div className="engyne-form-fields">
-              <div className="engyne-toggle-list">
-                <button
-                  className="engyne-toggle"
-                  type="button"
-                  onClick={() => togglePref("whatsappEnabled")}
-                  disabled={fieldsDisabled}
-                >
-                  <span>WhatsApp messaging</span>
-                  <span
-                    className={
-                      formState.whatsappEnabled ? "engyne-toggle-pill is-on" : "engyne-toggle-pill"
-                    }
-                  >
-                    {formState.whatsappEnabled ? "On" : "Off"}
-                  </span>
-                </button>
-                <button
-                  className="engyne-toggle"
-                  type="button"
-                  onClick={() => togglePref("indiamartMessageEnabled")}
-                  disabled={fieldsDisabled}
-                >
-                  <span>IndiaMart first message</span>
-                  <span
-                    className={
-                      formState.indiamartMessageEnabled
-                        ? "engyne-toggle-pill is-on"
-                        : "engyne-toggle-pill"
-                    }
-                  >
-                    {formState.indiamartMessageEnabled ? "On" : "Off"}
-                  </span>
-                </button>
-              </div>
-
-              <label className="engyne-field">
-                <span>WhatsApp session name</span>
-                <input
-                  className="engyne-input"
-                  value={formState.whatsappSession}
-                  onChange={(event) => updatePref("whatsappSession", event.target.value)}
-                  placeholder={selectedSlot?.slot_id || "slot_001"}
-                  disabled={fieldsDisabled}
-                />
-              </label>
-
-              <div className="engyne-inline-actions">
-                <button
-                  className="engyne-btn engyne-btn--primary engyne-btn--small"
-                  type="button"
-                  onClick={handleWhatsAppConnect}
-                  disabled={fieldsDisabled || whatsappLoading}
-                >
-                  Connect WhatsApp
-                </button>
-                <button
-                  className="engyne-btn engyne-btn--ghost engyne-btn--small"
-                  type="button"
-                  onClick={handleWhatsAppQr}
-                  disabled={fieldsDisabled || whatsappLoading}
-                >
-                  Refresh QR
-                </button>
-                <button
-                  className="engyne-btn engyne-btn--ghost engyne-btn--small"
-                  type="button"
-                  onClick={handleWhatsAppDisconnect}
-                  disabled={fieldsDisabled || whatsappLoading}
-                >
-                  Disconnect
-                </button>
-              </div>
-
-              {whatsappError && <div className="engyne-alert engyne-alert--danger">{whatsappError}</div>}
-
-              {whatsappQr && (
-                <div className="engyne-qr-card">
-                  <img src={whatsappQr} alt="WhatsApp QR" />
-                </div>
-              )}
-
-              <label className="engyne-field">
-                <span>WhatsApp message template</span>
-                <textarea
-                  className="engyne-input engyne-textarea"
-                  rows="3"
-                  value={formState.whatsappTemplate}
-                  onChange={(event) => updatePref("whatsappTemplate", event.target.value)}
-                  disabled={fieldsDisabled || !formState.whatsappEnabled}
-                />
-              </label>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <label className="engyne-field">
-                  <span>WhatsApp max per hour</span>
-                  <input
-                    className="engyne-input"
-                    type="number"
-                    min="0"
-                    value={formState.whatsappMaxPerHour}
-                    onChange={(event) => updatePref("whatsappMaxPerHour", Number(event.target.value))}
-                    disabled={fieldsDisabled || !formState.whatsappEnabled}
-                  />
-                </label>
-                <label className="engyne-field">
-                  <span>WhatsApp min delay (sec)</span>
-                  <input
-                    className="engyne-input"
-                    type="number"
-                    min="0"
-                    value={formState.whatsappMinDelay}
-                    onChange={(event) => updatePref("whatsappMinDelay", Number(event.target.value))}
-                    disabled={fieldsDisabled || !formState.whatsappEnabled}
-                  />
-                </label>
-              </div>
-
-              <label className="engyne-check">
-                <input
-                  type="checkbox"
-                  checked={formState.whatsappStopOnReply}
-                  onChange={() => togglePref("whatsappStopOnReply")}
-                  disabled={fieldsDisabled || !formState.whatsappEnabled}
-                />
-                <span>Stop messaging on reply</span>
-              </label>
-
-              <label className="engyne-field">
-                <span>IndiaMart first message template</span>
-                <textarea
-                  className="engyne-input engyne-textarea"
-                  rows="3"
-                  value={formState.indiamartMessageTemplate}
-                  onChange={(event) => updatePref("indiamartMessageTemplate", event.target.value)}
-                  disabled={fieldsDisabled || !formState.indiamartMessageEnabled}
-                />
-              </label>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <label className="engyne-field">
-                  <span>IndiaMart max per day</span>
-                  <input
-                    className="engyne-input"
-                    type="number"
-                    min="0"
-                    value={formState.indiamartMessageMaxPerDay}
-                    onChange={(event) =>
-                      updatePref("indiamartMessageMaxPerDay", Number(event.target.value))
-                    }
-                    disabled={fieldsDisabled || !formState.indiamartMessageEnabled}
-                  />
-                </label>
-                <label className="engyne-field">
-                  <span>IndiaMart min delay (sec)</span>
-                  <input
-                    className="engyne-input"
-                    type="number"
-                    min="0"
-                    value={formState.indiamartMessageMinDelay}
-                    onChange={(event) =>
-                      updatePref("indiamartMessageMinDelay", Number(event.target.value))
-                    }
-                    disabled={fieldsDisabled || !formState.indiamartMessageEnabled}
-                  />
-                </label>
-              </div>
             </div>
           </div>
 

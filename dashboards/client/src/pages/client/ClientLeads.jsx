@@ -80,7 +80,7 @@ export default function ClientLeads() {
       setStatus("Download ready.");
       window.setTimeout(() => setStatus(""), 2000);
     } catch (err) {
-      setStatus("Unable to download leads yet.");
+      setStatus("No leads available yet. Capture some first.");
       window.setTimeout(() => setStatus(""), 2500);
     }
   };
@@ -93,7 +93,7 @@ export default function ClientLeads() {
             <div className="engyne-kicker">Lead export</div>
             <div className="engyne-card-title">Download captured leads</div>
             <div className="engyne-card-helper">
-              Export JSONL files per slot or by batch once analytics is enabled.
+              Streams the latest leads from the database (JSONL). If a slot has no stored leads, download will show a message instead of a blank file.
             </div>
           </div>
           <button
