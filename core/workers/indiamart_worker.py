@@ -102,7 +102,7 @@ class IndiaMartWorker(BaseWorker):
             "recent_api_url": self.DEFAULT_RECENT_API_URL,
             "verified_url": self.DEFAULT_VERIFIED_URL,
             "use_browser": True,
-            "prefer_api": True,
+            "prefer_api": False,
             "headless": False,
             "allow_detail_click": False,
             "max_new_per_cycle": 20,
@@ -138,6 +138,9 @@ class IndiaMartWorker(BaseWorker):
                 return defaults
             cfg = defaults.copy()
             cfg.update({k: v for k, v in data.items() if v is not None})
+            # Headful sessions should always use the DOM path for consistency.
+            if cfg.get("headless") is False:
+                cfg["prefer_api"] = False
             return cfg
         except Exception:
             return defaults
@@ -1970,7 +1973,7 @@ class IndiaMartWorker(BaseWorker):
         self.config = self._load_config()
         self._quality_level = int(self.config.get("quality_level") or 70)
         self._maybe_reload_cookies()
-        prefer_api = bool(self.config.get("prefer_api", True))
+        prefer_api = bool(self.config.get("prefer_api", False))
         if (
             self.config.get("require_mobile_available")
             or self.config.get("require_mobile_verified")
@@ -1981,6 +1984,7 @@ class IndiaMartWorker(BaseWorker):
             prefer_api = False
         payload = None
         if prefer_api:
+            print("[WORKER] Recent fetch mode: API")
             payload = self._fetch_recent_payload()
         if payload:
             self.state["recent_payload"] = payload
@@ -1991,6 +1995,7 @@ class IndiaMartWorker(BaseWorker):
             return
         # Force DOM path when prefer_api is false
         self.state["recent_payload"] = None
+        print("[WORKER] Recent fetch mode: DOM")
 
         use_browser = self.config.get("use_browser", True)
         if use_browser and self.config.get("top_card_only"):
