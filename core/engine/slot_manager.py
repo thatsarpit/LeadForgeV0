@@ -404,10 +404,11 @@ while True:
                     save_json(state_file, state)
                 # Continue to command handling (may restart)
 
+            dirty = False
+
             if status in ("RUNNING", "STARTING", "STOPPING"):
                 # --- STARTUP GRACE WINDOW ---
                 if within_startup_grace(state):
-                    save_json(state_file, state)
                     continue
 
                 # --- PID CHECK ---
@@ -423,7 +424,7 @@ while True:
                         "last_heartbeat": None,
                         "command": None
                     })
-                    save_json(state_file, state)
+                    dirty = True
                     continue
 
                 # --- HEARTBEAT CHECK ---
@@ -442,7 +443,7 @@ while True:
                             "stop_reason": "no_heartbeat",
                             "stopped_at": utcnow()
                         })
-                        save_json(state_file, state)
+                        dirty = True
                         continue
                     # For STARTING/STOPPING without heartbeat, allow command handling to proceed
 
@@ -465,10 +466,10 @@ while True:
                                 "stopped_at": utcnow(),
                                 "command": None
                             })
-                            save_json(state_file, state)
+                            dirty = True
                             continue
                     except Exception:
-                        save_json(state_file, state)
+                        dirty = True
                         continue
 
             # ---------------- COMMAND HANDLING ---------------- #
@@ -481,6 +482,7 @@ while True:
                 if mode == "OBSERVER":
                     print(f"[SLOT_MANAGER] 👁️ Observer mode — cannot start {slot_id}")
                     state["command"] = None
+                    dirty = True
                 else:
                     # Ensure a clean slate before starting (avoid profile locks / orphan workers).
                     if pid and is_process_running(pid):
@@ -497,6 +499,7 @@ while True:
                         "busy": True,
                         "command": None
                     })
+                    dirty = True
 
             elif command == "PAUSE":
                 if is_process_running(pid):
@@ -508,6 +511,7 @@ while True:
                     "last_heartbeat": None,
                     "command": None
                 })
+                dirty = True
 
             elif command == "STOP":
                 if is_process_running(pid):
@@ -518,9 +522,10 @@ while True:
                     "auto_resume": False,
                     "command": None
                 })
+                dirty = True
 
-
-            save_json(state_file, state)
+            if dirty:
+                save_json(state_file, state)
 
         time.sleep(CHECK_INTERVAL)
     except Exception as e:
