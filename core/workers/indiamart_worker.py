@@ -407,7 +407,8 @@ class IndiaMartWorker(BaseWorker):
             return 0
 
         # 1) Explicit month counts (e.g., "18 months")
-        m = re.search(r"(\\d+)\\s*(?:month|mon)\\b", text, re.IGNORECASE)
+        # Accept "month", "months", "mon", "mons"
+        m = re.search(r"(\\d+)\\s*(?:months?|mons?)\\b", text, re.IGNORECASE)
         if m:
             try:
                 return int(m.group(1))
