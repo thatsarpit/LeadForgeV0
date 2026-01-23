@@ -275,7 +275,7 @@ def _check_indiamart_login(slot_id: str) -> dict:
     }
 
 
-def read_leads(slot_id: str, limit: int = 200) -> list[dict]:
+def read_leads(slot_id: str, limit: int = 200, include_rejected: bool = False) -> list[dict]:
     # Ensure slot exists (optional validation)
     require_slot_dir(slot_id)
     
@@ -286,10 +286,20 @@ def read_leads(slot_id: str, limit: int = 200) -> list[dict]:
     try:
         # Fetch newest leads first
         if isinstance(conn, Session):
-            result = conn.execute(
-                text("SELECT raw_data FROM leads WHERE slot_id = :slot_id ORDER BY fetched_at DESC LIMIT :limit"),
-                {"slot_id": slot_id, "limit": limit},
-            )
+            if include_rejected:
+                result = conn.execute(
+                    text("SELECT raw_data FROM leads WHERE slot_id = :slot_id ORDER BY fetched_at DESC LIMIT :limit"),
+                    {"slot_id": slot_id, "limit": limit},
+                )
+            else:
+                result = conn.execute(
+                    text(
+                        "SELECT raw_data FROM leads "
+                        "WHERE slot_id = :slot_id AND (status IS NULL OR status != :rejected) "
+                        "ORDER BY fetched_at DESC LIMIT :limit"
+                    ),
+                    {"slot_id": slot_id, "limit": limit, "rejected": "rejected"},
+                )
             rows = result.fetchall()
             for row in rows:
                 raw = row._mapping.get("raw_data") if hasattr(row, "_mapping") else row[0]
@@ -301,10 +311,16 @@ def read_leads(slot_id: str, limit: int = 200) -> list[dict]:
                 except Exception:
                     continue
         else:
-            cursor = conn.execute(
-                "SELECT raw_data FROM leads WHERE slot_id = ? ORDER BY fetched_at DESC LIMIT ?", 
-                (slot_id, limit)
-            )
+            if include_rejected:
+                cursor = conn.execute(
+                    "SELECT raw_data FROM leads WHERE slot_id = ? ORDER BY fetched_at DESC LIMIT ?",
+                    (slot_id, limit),
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT raw_data FROM leads WHERE slot_id = ? AND (status IS NULL OR status != ?) ORDER BY fetched_at DESC LIMIT ?",
+                    (slot_id, "rejected", limit),
+                )
             for row in cursor:
                 try:
                     leads.append(json.loads(row["raw_data"]))
@@ -1599,9 +1615,9 @@ def get_slot_metrics(slot_id: str, user=Depends(get_current_user)):
 
 @app.get("/slots/{slot_id}/leads")
 @app.get("/api/slots/{slot_id}/leads")
-def get_slot_leads(slot_id: str, limit: int = 200, user=Depends(get_current_user)):
+def get_slot_leads(slot_id: str, limit: int = 200, include_rejected: bool = False, user=Depends(get_current_user)):
     ensure_allowed_slot(user, slot_id)
-    return {"leads": read_leads(slot_id, limit)}
+    return {"leads": read_leads(slot_id, limit, include_rejected=include_rejected)}
 
 
 @app.get("/slots/{slot_id}/leads/download")
@@ -2135,6 +2151,7 @@ def get_cluster_slot_leads(
     node_id: str,
     slot_id: str,
     limit: int = 200,
+    include_rejected: bool = False,
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2142,7 +2159,13 @@ def get_cluster_slot_leads(
     node = resolve_node(node_id)
     if not node.get("base_url"):
         return get_slot_leads(slot_id, limit, user)
-    return node_request_json(node, db, "GET", f"/slots/{slot_id}/leads", params={"limit": limit})
+    return node_request_json(
+        node,
+        db,
+        "GET",
+        f"/slots/{slot_id}/leads",
+        params={"limit": limit, "include_rejected": str(include_rejected).lower()},
+    )
 
 
 @app.get("/cluster/slots/{node_id}/{slot_id}/leads/download")

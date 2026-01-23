@@ -463,7 +463,9 @@ export default function ClientSlots() {
                     const verified =
                       Number(selectedSlot.metrics?.verified_total || 0) -
                       Number(selectedSlot.run_verified_start || 0);
-                    return `${verified}/${clicked || 0}`;
+                    const safeClicked = Math.max(0, clicked);
+                    const safeVerified = Math.max(0, verified);
+                    return `${safeClicked}/${safeVerified}`;
                   })()}
                 </div>
               </div>

@@ -68,6 +68,7 @@ export async function fetchSlotLeads(slotId, nodeId, limit = 50) {
   if (limit) {
     params.set("limit", String(limit));
   }
+  params.set("include_rejected", "false");
   if (nodeId) {
     return request(`/cluster/slots/${nodeId}/${slotId}/leads?${params.toString()}`);
   }

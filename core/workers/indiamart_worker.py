@@ -736,8 +736,14 @@ class IndiaMartWorker(BaseWorker):
             # In headful mode, prefer HTTP to avoid flashing a visible verified tab.
             if self.config.get("headless") is False:
                 html = self._fetch_page(url)
-                if html:
+                if html and self._page_logged_in(html):
                     return html
+                # Refresh cookies from the browser and retry HTTP once.
+                if self._refresh_cookies_from_browser():
+                    html = self._fetch_page(url)
+                    if html:
+                        return html
+                return None
             page = None
             try:
                 page = self._context.new_page()
