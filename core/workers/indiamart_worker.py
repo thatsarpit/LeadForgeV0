@@ -103,7 +103,7 @@ class IndiaMartWorker(BaseWorker):
             "verified_url": self.DEFAULT_VERIFIED_URL,
             "use_browser": True,
             "prefer_api": True,
-            "headless": True,
+            "headless": False,
             "allow_detail_click": False,
             "max_new_per_cycle": 20,
             "max_verified_leads_per_cycle": 6,
