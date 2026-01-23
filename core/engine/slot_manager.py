@@ -196,7 +196,7 @@ def stop_runner(pid, slot_id, timeout=5):
                 worker_pid = None
         if worker_pid and worker_pid != pid:
             worker_pids = set(list_slot_worker_pids(slot_id))
-            if worker_pid in worker_pids and is_pid_alive(worker_pid):
+            if worker_pid in worker_pids and is_process_running(worker_pid):
                 try:
                     os.killpg(os.getpgid(worker_pid), signal.SIGTERM)
                 except Exception:
@@ -242,7 +242,7 @@ def stop_runner(pid, slot_id, timeout=5):
                 worker_pid = None
         if worker_pid and worker_pid != pid:
             worker_pids = set(list_slot_worker_pids(slot_id))
-            if worker_pid in worker_pids and is_pid_alive(worker_pid):
+            if worker_pid in worker_pids and is_process_running(worker_pid):
                 try:
                     os.killpg(os.getpgid(worker_pid), signal.SIGKILL)
                 except Exception:
