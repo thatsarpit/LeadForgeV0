@@ -189,15 +189,22 @@ def stop_runner(pid, slot_id, timeout=5):
         state_file = SLOTS_DIR / slot_id / "slot_state.json"
         state = load_json(state_file, {})
         worker_pid = state.get("pid")
+        if worker_pid:
+            try:
+                worker_pid = int(worker_pid)
+            except Exception:
+                worker_pid = None
         if worker_pid and worker_pid != pid:
-            try:
-                os.killpg(os.getpgid(worker_pid), signal.SIGTERM)
-            except Exception:
-                pass
-            try:
-                os.kill(worker_pid, signal.SIGTERM)
-            except Exception:
-                pass
+            worker_pids = set(list_slot_worker_pids(slot_id))
+            if worker_pid in worker_pids and is_pid_alive(worker_pid):
+                try:
+                    os.killpg(os.getpgid(worker_pid), signal.SIGTERM)
+                except Exception:
+                    pass
+                try:
+                    os.kill(worker_pid, signal.SIGTERM)
+                except Exception:
+                    pass
     except Exception:
         pass
     waited = 0
@@ -228,15 +235,22 @@ def stop_runner(pid, slot_id, timeout=5):
         state_file = SLOTS_DIR / slot_id / "slot_state.json"
         state = load_json(state_file, {})
         worker_pid = state.get("pid")
+        if worker_pid:
+            try:
+                worker_pid = int(worker_pid)
+            except Exception:
+                worker_pid = None
         if worker_pid and worker_pid != pid:
-            try:
-                os.killpg(os.getpgid(worker_pid), signal.SIGKILL)
-            except Exception:
-                pass
-            try:
-                os.kill(worker_pid, signal.SIGKILL)
-            except Exception:
-                pass
+            worker_pids = set(list_slot_worker_pids(slot_id))
+            if worker_pid in worker_pids and is_pid_alive(worker_pid):
+                try:
+                    os.killpg(os.getpgid(worker_pid), signal.SIGKILL)
+                except Exception:
+                    pass
+                try:
+                    os.kill(worker_pid, signal.SIGKILL)
+                except Exception:
+                    pass
     except Exception:
         pass
 
