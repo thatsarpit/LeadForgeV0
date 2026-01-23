@@ -1161,8 +1161,8 @@ class IndiaMartWorker(BaseWorker):
                 url = location.origin + url;
               }
               // Clean double-domain bug
-              url = url.replace(/^(https?:)?\/\/seller\.indiamart\.com\/+seller\.indiamart\.com\//i, 'https://seller.indiamart.com/');
-              url = url.replace(/(https?:\/\/seller\.indiamart\.com)\/+seller\.indiamart\.com\//i, '$1/');
+              url = url.replace(/^(https?:)?\\/\\/seller\\.indiamart\\.com\\/+seller\\.indiamart\\.com\\//i, 'https://seller.indiamart.com/');
+              url = url.replace(/(https?:\\/\\/seller\\.indiamart\\.com)\\/+seller\\.indiamart\\.com\\//i, '$1/');
             }
             
             const city = pickValue(['input[id^="card_city_"]', 'input[name^="card_city"]'], card);
