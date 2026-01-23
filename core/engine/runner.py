@@ -20,7 +20,9 @@ def load_state(path: Path) -> dict:
 def write_state(path: Path, updates: dict):
     state = load_state(path)
     state.update(updates)
-    path.write_text(json.dumps(state, indent=2))
+    tmp = path.with_suffix(f".tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(state, indent=2))
+    tmp.replace(path)
 
 
 def main():
@@ -60,6 +62,7 @@ def main():
         "last_heartbeat": now,
         "updated_at": now,
         "pid": None,
+        "last_exit_code": None,
     })
 
     module_path = f"core.workers.{worker_name}"
@@ -77,11 +80,13 @@ def main():
         ],
         cwd=BASE_DIR,
         env=env,
-        start_new_session=True,
     )
 
     write_state(state_file, {
         "pid": proc.pid,
+        "status": "RUNNING",
+        "busy": True,
+        "last_exit_code": None,
         "updated_at": datetime.utcnow().isoformat(),
     })
 
@@ -90,9 +95,13 @@ def main():
     try:
         while True:
             if proc.poll() is not None:
-                print("[RUNNER] ❌ Worker exited")
+                print(f"[RUNNER] ❌ Worker exited with code {proc.returncode}")
                 write_state(state_file, {
                     "pid": None,
+                    "status": "STOPPED",
+                    "busy": False,
+                    "last_error": f"worker_exit:{proc.returncode}",
+                    "last_exit_code": proc.returncode,
                     "updated_at": datetime.utcnow().isoformat(),
                 })
                 break

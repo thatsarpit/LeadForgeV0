@@ -1,5 +1,6 @@
 # core/workers/base_worker.py
 
+import os
 import json
 import re
 import signal
@@ -68,7 +69,10 @@ class BaseWorker:
         return json.loads(self.state_file.read_text())
 
     def write_state(self, state):
-        self.state_file.write_text(json.dumps(state, indent=2))
+        # Atomic write to avoid empty/partial JSON during concurrent reads
+        tmp = self.state_file.with_suffix(f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(state, indent=2))
+        tmp.replace(self.state_file)
 
     def init_metrics(self):
         state = self.load_state()
@@ -80,6 +84,9 @@ class BaseWorker:
             "throughput": 0,
             "pages_fetched": 0,
             "leads_parsed": 0,
+            "clicked_total": 0,
+            "verified_total": 0,
+            "rejected_total": 0,
             "errors": 0,
             "last_error": None,
             "error_rate": 0,
@@ -106,6 +113,18 @@ class BaseWorker:
         for k, v in updates.items():
             metrics[k] = v
 
+        state["metrics"] = metrics
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.write_state(state)
+
+    def bump_metrics(self, **increments):
+        state = self.load_state()
+        metrics = state.get("metrics", {})
+        for k, v in increments.items():
+            try:
+                metrics[k] = metrics.get(k, 0) + v
+            except Exception:
+                metrics[k] = v
         state["metrics"] = metrics
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.write_state(state)
@@ -151,9 +170,10 @@ class BaseWorker:
         try:
             cleaned = str(value).replace("Z", "+00:00")
             parsed = datetime.fromisoformat(cleaned)
-            if parsed.tzinfo:
-                return parsed.astimezone(timezone.utc).replace(tzinfo=None)
-            return parsed
+            # Normalize everything to timezone-aware UTC to avoid naive/aware math errors
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
         except Exception:
             return None
 
@@ -238,11 +258,6 @@ class BaseWorker:
             if not config:
                 return False
 
-            schedule = config.get("client_schedule")
-            if not self._schedule_allows_run(schedule):
-                self._request_stop("outside_schedule", "Outside configured run window")
-                return True
-
             max_minutes = int(config.get("max_run_minutes") or 0)
             if max_minutes > 0:
                 state = self.load_state()
@@ -254,15 +269,22 @@ class BaseWorker:
                         self._request_stop("max_runtime_reached", f"{int(elapsed_min)} minutes")
                         return True
 
-            max_clicks = int(config.get("max_clicks_per_run") or 0)
-            if max_clicks > 0:
+            # Lead target cap should be based on verified leads
+            max_verified = int(
+                config.get("max_verified_leads_per_cycle")
+                or config.get("max_verified_leads_per_run")
+                or config.get("max_clicks_per_cycle")
+                or config.get("max_clicks_per_run")
+                or 0
+            )
+            if max_verified > 0:
                 state = self.load_state()
                 metrics = state.get("metrics", {})
-                total_leads = int(metrics.get("leads_parsed") or 0)
-                baseline = int(state.get("run_leads_start") or 0)
-                leads_this_run = max(0, total_leads - baseline)
-                if leads_this_run >= max_clicks:
-                    self._request_stop("lead_target_reached", f"{leads_this_run} leads")
+                total_verified = int(metrics.get("verified_total") or 0)
+                baseline = int(state.get("run_verified_start") or 0)
+                verified_this_run = max(0, total_verified - baseline)
+                if verified_this_run >= max_verified:
+                    self._request_stop("lead_target_reached", f"{verified_this_run} verified")
                     return True
         except Exception:
             return False
@@ -275,6 +297,9 @@ class BaseWorker:
         state = self.load_state()
         metrics = state.get("metrics", {})
         run_leads_start = int(metrics.get("leads_parsed") or 0)
+        run_clicked_start = int(metrics.get("clicked_total") or 0)
+        run_verified_start = int(metrics.get("verified_total") or 0)
+        run_rejected_start = int(metrics.get("rejected_total") or 0)
         run_started_at = datetime.now(timezone.utc).isoformat()
         state.update({
             "status": "RUNNING",
@@ -283,6 +308,9 @@ class BaseWorker:
             "started_at": state.get("started_at") or run_started_at,
             "run_started_at": run_started_at,
             "run_leads_start": run_leads_start,
+            "run_clicked_start": run_clicked_start,
+            "run_verified_start": run_verified_start,
+            "run_rejected_start": run_rejected_start,
             "stop_reason": None,
             "stop_detail": None,
             "updated_at": datetime.now(timezone.utc).isoformat(),
