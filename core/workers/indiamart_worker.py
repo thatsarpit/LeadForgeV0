@@ -126,6 +126,7 @@ class IndiaMartWorker(BaseWorker):
             "verify_after_click_seconds": 10,
             "verify_render_wait_ms": 5000,
             "cooldown_seconds": None,
+            "periodic_verify": False,
             "debug_snapshot": False,
         }
 
@@ -1759,29 +1760,30 @@ class IndiaMartWorker(BaseWorker):
         verify_wait_ms = int(self.config.get("verify_render_wait_ms") or 0)
         verified_total = set()
 
-        for lead_id in clicked_ids:
-            if verify_delay > 0:
-                time.sleep(verify_delay)
-            html = self._fetch_verified_html(wait_ms=verify_wait_ms)
-            if not html:
-                continue
-            if not self._page_logged_in(html):
-                self.record_error("login_required")
-                self._refresh_cookies_from_browser()
-            verified_ids, verified_urls, verified_titles = self._parse_verified(html or "")
-            newly_verified = self._apply_verification(
-                leads,
-                verified_ids,
-                verified_urls,
-                verified_titles,
-                only_lead_ids={lead_id},
-            )
-            if newly_verified:
-                verified_total.update(newly_verified)
-                try:
-                    mark_leads_as_verified(self.slot_dir.name, newly_verified)
-                except Exception as e:
-                    self.record_error(f"db_verify_err: {e}")
+        if verify_delay > 0:
+            time.sleep(verify_delay)
+
+        html = self._fetch_verified_html(wait_ms=verify_wait_ms)
+        if not html:
+            return verified_total
+        if not self._page_logged_in(html):
+            self.record_error("login_required")
+            self._refresh_cookies_from_browser()
+
+        verified_ids, verified_urls, verified_titles = self._parse_verified(html or "")
+        newly_verified = self._apply_verification(
+            leads,
+            verified_ids,
+            verified_urls,
+            verified_titles,
+            only_lead_ids=set(clicked_ids),
+        )
+        if newly_verified:
+            verified_total.update(newly_verified)
+            try:
+                mark_leads_as_verified(self.slot_dir.name, newly_verified)
+            except Exception as e:
+                self.record_error(f"db_verify_err: {e}")
 
         return verified_total
 
@@ -2377,22 +2379,24 @@ class IndiaMartWorker(BaseWorker):
         self.config = self._load_config()
         self._maybe_reload_cookies()
         
-        # Periodic verification logic (every ~30s)
-        # Only trigger if we are in a "stable" state like FETCH_RECENT
-        current_phase = self.state.get("phase")
-        ticks = self.state.get("ticks_since_verify", 0)
-        metrics = self.load_state().get("metrics", {})
-        clicked_baseline = self.load_state().get("run_clicked_start", 0)
-        clicked_total = metrics.get("clicked_total", 0)
-        has_new_clicks = clicked_total > clicked_baseline
+        # Periodic verification is optional; by default we only verify after clicks.
+        if self.config.get("periodic_verify"):
+            # Periodic verification logic (every ~30s)
+            # Only trigger if we are in a "stable" state like FETCH_RECENT
+            current_phase = self.state.get("phase")
+            ticks = self.state.get("ticks_since_verify", 0)
+            metrics = self.load_state().get("metrics", {})
+            clicked_baseline = self.load_state().get("run_clicked_start", 0)
+            clicked_total = metrics.get("clicked_total", 0)
+            has_new_clicks = clicked_total > clicked_baseline
 
-        # Only trigger periodic verify if we have any clicks beyond the run baseline
-        if current_phase == "FETCH_RECENT" and ticks > 60 and has_new_clicks:
-            self.state["phase"] = "FETCH_VERIFIED"
-            self.state["ticks_since_verify"] = 0
-            self._record_action("periodic_verify", "FETCH_VERIFIED")
-        else:
-            self.state["ticks_since_verify"] = ticks + 1
+            # Only trigger periodic verify if we have any clicks beyond the run baseline
+            if current_phase == "FETCH_RECENT" and ticks > 60 and has_new_clicks:
+                self.state["phase"] = "FETCH_VERIFIED"
+                self.state["ticks_since_verify"] = 0
+                self._record_action("periodic_verify", "FETCH_VERIFIED")
+            else:
+                self.state["ticks_since_verify"] = ticks + 1
 
         phase = self.state.get("phase", "INIT")
         try:
