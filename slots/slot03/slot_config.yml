@@ -53,21 +53,21 @@ search_terms:
 - prednisone
 exclude_terms: []
 country:
+- us
+- united states
+- usa
+- united states of america
+- gb
+- united kingdom
+- uk
+- great britain
+- britain
 - au
 - australia
-- us
-- usa
-- united states
-- gb
-- uk
-- united kingdom
-- de
-- germany
 client_regions:
-- AU
 - US
 - GB
-- DE
+- AU
 whatsapp_enabled: false
 whatsapp_waha_session: slot03
 whatsapp_template: ''
@@ -78,21 +78,22 @@ indiamart_message_enabled: false
 indiamart_message_template: ''
 indiamart_message_max_per_day: 20
 indiamart_message_min_delay_s: 30
-client_schedule:
-  enabled: false
-  window_start: ''
-  window_end: ''
-  days:
-  - mon
-  - tue
-  - wed
-  - thu
-  - fri
-  timezone: Asia/Calcutta
-max_clicks_per_cycle: 10
-max_clicks_per_run: 0
 max_run_minutes: 0
 max_lead_age_seconds: 30
-allow_unknown_age: true
+allow_unknown_age: false
 debug_snapshot: true
 prefer_api: false
+zero_second_only: false
+require_mobile_available: false
+require_email_verified: false
+quality_level: 70
+min_member_months: 0
+max_age_hours: 48
+recent_refresh_seconds: 2
+recent_wait_ms: 1200
+recent_wait_networkidle: false
+top_card_only: true
+top_card_count: 1
+max_new_per_cycle: 1
+headless: false
+max_verified_leads_per_cycle: 4
