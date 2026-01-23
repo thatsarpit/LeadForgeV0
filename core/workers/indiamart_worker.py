@@ -733,6 +733,11 @@ class IndiaMartWorker(BaseWorker):
         url = self.config.get("verified_url") or self.DEFAULT_VERIFIED_URL
         html = None
         if self.config.get("use_browser", True) and self._ensure_browser():
+            # In headful mode, prefer HTTP to avoid flashing a visible verified tab.
+            if self.config.get("headless") is False:
+                html = self._fetch_page(url)
+                if html:
+                    return html
             page = None
             try:
                 page = self._context.new_page()
