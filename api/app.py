@@ -409,6 +409,7 @@ class RemoteLoginSession:
         self.context = None
         self.page = None
         self.cdp = None
+        self.browser = None
         self.viewers = set()
         self.viewport = {
             "width": REMOTE_LOGIN_VIEWPORT_WIDTH,
@@ -416,6 +417,59 @@ class RemoteLoginSession:
         }
         self._closed = False
         self._start_lock = asyncio.Lock()
+
+    async def _broadcast_status(self):
+        payload = {
+            "type": "status",
+            "status": self.status,
+            "error": self.error,
+            "expires_at": self.expires_at.isoformat() + "Z",
+        }
+        for ws in list(self.viewers):
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                self.viewers.discard(ws)
+
+    async def _hydrate_cookies(self, context):
+        session_file = slot_path(self.slot_id) / "session.enc"
+        if not session_file.exists():
+            return
+        try:
+            raw = json.loads(session_file.read_text())
+        except Exception:
+            return
+        if not isinstance(raw, list):
+            return
+        cookies = []
+        for cookie in raw:
+            if not isinstance(cookie, dict):
+                continue
+            if not cookie.get("name"):
+                continue
+            if "value" not in cookie:
+                continue
+            payload = {
+                "name": cookie.get("name"),
+                "value": cookie.get("value"),
+                "path": cookie.get("path") or "/",
+            }
+            if cookie.get("domain"):
+                payload["domain"] = cookie.get("domain")
+            if cookie.get("expires"):
+                payload["expires"] = cookie.get("expires")
+            if cookie.get("httpOnly") is not None:
+                payload["httpOnly"] = bool(cookie.get("httpOnly"))
+            if cookie.get("secure") is not None:
+                payload["secure"] = bool(cookie.get("secure"))
+            if cookie.get("sameSite"):
+                payload["sameSite"] = cookie.get("sameSite")
+            cookies.append(payload)
+        if cookies:
+            try:
+                await context.add_cookies(cookies)
+            except Exception:
+                return
 
     def is_expired(self) -> bool:
         return datetime.utcnow() >= self.expires_at
@@ -437,19 +491,56 @@ class RemoteLoginSession:
         async with self._start_lock:
             if self.context or self._closed:
                 return
+            self.status = "starting"
+            self.error = None
+            await self._broadcast_status()
             try:
                 playwright = await _get_playwright()
                 profile_dir = BASE_DIR / "browser_profiles" / self.slot_id
                 profile_dir.mkdir(parents=True, exist_ok=True)
-                self.context = await playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=True,
-                    viewport=self.viewport,
-                    args=["--disable-dev-shm-usage", "--no-sandbox"],
-                )
-                self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
-                await self.page.goto(self.target_url, wait_until="domcontentloaded", timeout=60000)
-                self.cdp = await self.context.new_cdp_session(self.page)
+                started = False
+                last_exc = None
+
+                # Attempt persistent context first (headless, then headful).
+                for headless in (True, False):
+                    try:
+                        self.context = await playwright.chromium.launch_persistent_context(
+                            user_data_dir=str(profile_dir),
+                            headless=headless,
+                            viewport=self.viewport,
+                            args=["--disable-dev-shm-usage", "--no-sandbox"],
+                        )
+                        self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+                        await self.page.goto(self.target_url, wait_until="domcontentloaded", timeout=60000)
+                        self.cdp = await self.context.new_cdp_session(self.page)
+                        started = True
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        try:
+                            if self.context:
+                                await self.context.close()
+                        except Exception:
+                            pass
+                        self.context = None
+                        self.page = None
+                        self.cdp = None
+
+                # Fallback: non-persistent context with cookie hydration.
+                if not started:
+                    try:
+                        self.browser = await playwright.chromium.launch(
+                            headless=True,
+                            args=["--disable-dev-shm-usage", "--no-sandbox"],
+                        )
+                        self.context = await self.browser.new_context(viewport=self.viewport)
+                        await self._hydrate_cookies(self.context)
+                        self.page = await self.context.new_page()
+                        await self.page.goto(self.target_url, wait_until="domcontentloaded", timeout=60000)
+                        self.cdp = await self.context.new_cdp_session(self.page)
+                        started = True
+                    except Exception as exc:
+                        last_exc = exc
 
                 def _on_frame(params):
                     asyncio.create_task(self._handle_frame(params))
@@ -466,12 +557,16 @@ class RemoteLoginSession:
                     },
                 )
                 self.status = "active"
+                await self._broadcast_status()
             except Exception as exc:
+                if "last_exc" in locals() and last_exc is not None:
+                    exc = last_exc
                 print(f"DEBUG: RemoteLoginSession start failed: {exc}")
                 import traceback
                 traceback.print_exc()
                 self.status = "error"
                 self.error = str(exc)[:200]
+                await self._broadcast_status()
 
     async def _handle_frame(self, params: dict):
         if not self.cdp or self._closed:
@@ -550,6 +645,11 @@ class RemoteLoginSession:
         try:
             if self.context:
                 await self.context.close()
+        except Exception:
+            pass
+        try:
+            if self.browser:
+                await self.browser.close()
         except Exception:
             pass
 
@@ -2626,7 +2726,12 @@ async def remote_login_ws(websocket: WebSocket, session_id: str, token: str = Qu
 
         await websocket.accept()
         session.viewers.add(websocket)
-        await websocket.send_json({"type": "status", "status": session.status, "expires_at": session.expires_at.isoformat() + "Z"})
+        await websocket.send_json({
+            "type": "status",
+            "status": session.status,
+            "error": session.error,
+            "expires_at": session.expires_at.isoformat() + "Z",
+        })
 
         while True:
             message = await websocket.receive_json()

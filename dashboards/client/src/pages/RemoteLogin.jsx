@@ -73,6 +73,9 @@ export default function RemoteLogin() {
         }
         if (payload.type === "status") {
           setStatus(payload.status || "active");
+          if (payload.error) {
+            setError(payload.error);
+          }
         }
       } catch (err) {
         return;
