@@ -13,7 +13,9 @@ RUNNER_PATH = BASE_DIR / "core" / "engine" / "runner.py"
 
 HEARTBEAT_TIMEOUT = 30  # seconds
 CHECK_INTERVAL = 3      # seconds
-STARTUP_GRACE_SECONDS = 15
+# Playwright startup (profile load, tunnel latency, cold browser) can exceed 15s.
+# Give the worker time to boot and emit its first heartbeat.
+STARTUP_GRACE_SECONDS = 60
 DEFAULT_SLOT_WORKER = os.getenv("DEFAULT_SLOT_WORKER", "indiamart_worker")
 DEFAULT_SLOT_MODE = os.getenv("DEFAULT_SLOT_MODE", "ACTIVE")
 VENV_PYTHON = BASE_DIR / "venv" / "bin" / "python"
@@ -73,7 +75,10 @@ def load_json(path, default):
         return default.copy()
 
 def save_json(path, data):
-    path.write_text(json.dumps(data, indent=2))
+    # Atomic write to avoid truncation races with workers reading the file
+    tmp = path.with_suffix(f".tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(path)
 
 def utcnow():
     return datetime.now(timezone.utc).isoformat().replace('+00:00', '')
@@ -86,6 +91,46 @@ def is_process_running(pid):
         return True
     except Exception:
         return False
+
+def _iter_process_table():
+    try:
+        out = subprocess.check_output(["ps", "-ax", "-o", "pid=,command="], text=True)
+    except Exception:
+        return
+    for line in out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except Exception:
+            continue
+        yield pid, parts[1]
+
+def list_slot_worker_pids(slot_id: str):
+    slot_path = str((SLOTS_DIR / slot_id).resolve())
+    profile_path = str((BASE_DIR / "browser_profiles" / slot_id).resolve())
+    pids = []
+    for pid, cmd in _iter_process_table() or []:
+        if slot_path in cmd and "core.workers." in cmd:
+            pids.append(pid)
+            continue
+        # Sweep stray chromium instances that still hold the slot profile.
+        if profile_path in cmd and ("headless_shell" in cmd or "chromium" in cmd or "chrome" in cmd):
+            pids.append(pid)
+    return sorted(set(pids))
+
+def kill_slot_processes(slot_id: str, sig=signal.SIGTERM):
+    for pid in list_slot_worker_pids(slot_id):
+        try:
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, sig)
+        except Exception:
+            pass
+        try:
+            os.kill(pid, sig)
+        except Exception:
+            pass
 
 # Track open log handles for cleanup
 _log_handles = {}
@@ -117,10 +162,95 @@ def start_runner(slot_id):
     )
     return proc.pid
 
-def stop_runner(pid, slot_id):
+def stop_runner(pid, slot_id, timeout=5):
+    """Attempt graceful stop (process + group), then force kill."""
+    if not pid:
+        return
+    # Try to stop the whole process group first (worker + browser children)
     try:
-        os.kill(pid, 9)
-        print(f"[SLOT_MANAGER] ⛔ Stopped runner for {slot_id}")
+        pgid = os.getpgid(pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except Exception:
+        pass
+    # Also try direct PID signal
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        pass
+    # If pid is a runner, kill its children too
+    try:
+        subprocess.run(["pkill", "-TERM", "-P", str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    # Also sweep any orphaned workers/browsers still running for this slot.
+    kill_slot_processes(slot_id, sig=signal.SIGTERM)
+    # If runner PID differs from worker PID in state, stop that group too.
+    try:
+        state_file = SLOTS_DIR / slot_id / "slot_state.json"
+        state = load_json(state_file, {})
+        worker_pid = state.get("pid")
+        if worker_pid:
+            try:
+                worker_pid = int(worker_pid)
+            except Exception:
+                worker_pid = None
+        if worker_pid and worker_pid != pid:
+            worker_pids = set(list_slot_worker_pids(slot_id))
+            if worker_pid in worker_pids and is_process_running(worker_pid):
+                try:
+                    os.killpg(os.getpgid(worker_pid), signal.SIGTERM)
+                except Exception:
+                    pass
+                try:
+                    os.kill(worker_pid, signal.SIGTERM)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    waited = 0
+    while waited < timeout:
+        if not is_process_running(pid):
+            print(f"[SLOT_MANAGER] ⛔ Stopped runner for {slot_id}")
+            return
+        time.sleep(0.5)
+        waited += 0.5
+    # Force kill process group and pid
+    try:
+        pgid = os.getpgid(pid)
+        os.killpg(pgid, signal.SIGKILL)
+    except Exception:
+        pass
+    try:
+        os.kill(pid, signal.SIGKILL)
+        print(f"[SLOT_MANAGER] ⛔ Force-killed runner for {slot_id}")
+    except Exception:
+        pass
+    try:
+        subprocess.run(["pkill", "-KILL", "-P", str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    kill_slot_processes(slot_id, sig=signal.SIGKILL)
+    # Force kill worker pid if it diverged
+    try:
+        state_file = SLOTS_DIR / slot_id / "slot_state.json"
+        state = load_json(state_file, {})
+        worker_pid = state.get("pid")
+        if worker_pid:
+            try:
+                worker_pid = int(worker_pid)
+            except Exception:
+                worker_pid = None
+        if worker_pid and worker_pid != pid:
+            worker_pids = set(list_slot_worker_pids(slot_id))
+            if worker_pid in worker_pids and is_process_running(worker_pid):
+                try:
+                    os.killpg(os.getpgid(worker_pid), signal.SIGKILL)
+                except Exception:
+                    pass
+                try:
+                    os.kill(worker_pid, signal.SIGKILL)
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -173,6 +303,8 @@ def ensure_state_defaults(state, slot_id):
     if not isinstance(metrics, dict):
         metrics = {}
         changed = True
+    if "last_exit_code" not in state:
+        state["last_exit_code"] = None
     defaults = {
         "cpu": 0,
         "memory": 0,
@@ -253,6 +385,25 @@ while True:
 
             # ---------------- TRUTH ENFORCEMENT ---------------- #
 
+            # If slot is stopped/paused/dead, ensure no stray runner is still alive.
+            if status in ("STOPPED", "PAUSED", "DEAD"):
+                # Always sweep any orphaned workers/browsers even if pid is missing.
+                # This prevents slow-start + heartbeat timeouts due to locked profiles.
+                kill_slot_processes(slot_id, sig=signal.SIGTERM)
+                kill_slot_processes(slot_id, sig=signal.SIGKILL)
+                if pid:
+                    if is_process_running(pid):
+                        print(f"[SLOT_MANAGER] 🧹 {slot_id} is {status} but PID {pid} is alive — stopping stray process")
+                        stop_runner(pid, slot_id)
+                    # Always clear stale pid + heartbeat for non-running states
+                    state.update({
+                        "pid": None,
+                        "busy": False,
+                        "last_heartbeat": None,
+                    })
+                    save_json(state_file, state)
+                # Continue to command handling (may restart)
+
             if status in ("RUNNING", "STARTING", "STOPPING"):
                 # --- STARTUP GRACE WINDOW ---
                 if within_startup_grace(state):
@@ -280,38 +431,45 @@ while True:
                 if not last_hb:
                     # allow missing heartbeat AFTER grace? strictness check
                     if status == "RUNNING":
-                        # If running and NO heartbeat after grace -> Mark as DEAD
-                        print(f"[SLOT_MANAGER] 💀 No heartbeat for running slot {slot_id}, marking DEAD")
-                        state.update({
-                            "status": "DEAD",
-                            "busy": False,
-                            "stop_reason": "no_heartbeat",
-                            "stopped_at": utcnow()
-                        })
-                    save_json(state_file, state)
-                    continue
-
-                try:
-                    last = datetime.fromisoformat(last_hb)
-                    # Make timezone-aware if needed
-                    if last.tzinfo is None:
-                        last = last.replace(tzinfo=timezone.utc)
-                    if datetime.now(timezone.utc) - last > timedelta(seconds=HEARTBEAT_TIMEOUT):
-                        print(f"[SLOT_MANAGER] 💀 Heartbeat timeout for {slot_id}")
+                        # If running and NO heartbeat after grace -> Mark as DEAD and stop process
+                        print(f"[SLOT_MANAGER] 💀 No heartbeat for running slot {slot_id}, stopping")
                         if is_process_running(pid):
                             stop_runner(pid, slot_id)
                         state.update({
-                            "status": "STOPPED",
-                            "pid": None,
+                            "status": "DEAD",
                             "busy": False,
-                            "last_heartbeat": None,
-                            "command": None
+                            "pid": None,
+                            "stop_reason": "no_heartbeat",
+                            "stopped_at": utcnow()
                         })
                         save_json(state_file, state)
                         continue
-                except Exception:
-                    save_json(state_file, state)
-                    continue
+                    # For STARTING/STOPPING without heartbeat, allow command handling to proceed
+
+                if last_hb:
+                    try:
+                        last = datetime.fromisoformat(last_hb)
+                        # Make timezone-aware if needed
+                        if last.tzinfo is None:
+                            last = last.replace(tzinfo=timezone.utc)
+                        if datetime.now(timezone.utc) - last > timedelta(seconds=HEARTBEAT_TIMEOUT):
+                            print(f"[SLOT_MANAGER] 💀 Heartbeat timeout for {slot_id}")
+                            if is_process_running(pid):
+                                stop_runner(pid, slot_id)
+                            state.update({
+                                "status": "DEAD",
+                                "pid": None,
+                                "busy": False,
+                                "last_heartbeat": None,
+                                "stop_reason": "heartbeat_timeout",
+                                "stopped_at": utcnow(),
+                                "command": None
+                            })
+                            save_json(state_file, state)
+                            continue
+                    except Exception:
+                        save_json(state_file, state)
+                        continue
 
             # ---------------- COMMAND HANDLING ---------------- #
 
@@ -324,12 +482,18 @@ while True:
                     print(f"[SLOT_MANAGER] 👁️ Observer mode — cannot start {slot_id}")
                     state["command"] = None
                 else:
+                    # Ensure a clean slate before starting (avoid profile locks / orphan workers).
+                    if pid and is_process_running(pid):
+                        stop_runner(pid, slot_id)
+                    kill_slot_processes(slot_id, sig=signal.SIGTERM)
+                    kill_slot_processes(slot_id, sig=signal.SIGKILL)
                     if not is_process_running(pid):
                         state["pid"] = start_runner(slot_id)
                     state.update({
                         "status": "RUNNING",
                         "started_at": utcnow(),
-                        "last_heartbeat": None,
+                        # Seed heartbeat so we don't immediately mark DEAD while Playwright boots.
+                        "last_heartbeat": utcnow(),
                         "busy": True,
                         "command": None
                     })
@@ -340,6 +504,8 @@ while True:
                 state.update({
                     "status": "PAUSED",
                     "pid": None,
+                    "busy": False,
+                    "last_heartbeat": None,
                     "command": None
                 })
 

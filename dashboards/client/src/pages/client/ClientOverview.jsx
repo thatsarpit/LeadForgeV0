@@ -8,138 +8,12 @@ import StatCard from "../../components/StatCard";
 
 const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const DAY_ALIASES = {
-  mon: 1,
-  monday: 1,
-  tue: 2,
-  tues: 2,
-  tuesday: 2,
-  wed: 3,
-  weds: 3,
-  wednesday: 3,
-  thu: 4,
-  thur: 4,
-  thurs: 4,
-  thursday: 4,
-  fri: 5,
-  friday: 5,
-  sat: 6,
-  saturday: 6,
-  sun: 0,
-  sunday: 0,
-};
-
-const parseDays = (value) => {
-  if (!value) return null;
-  const raw = Array.isArray(value) ? value : String(value).split(/,|\s/);
-  const days = new Set();
-  raw.forEach((token) => {
-    const key = String(token).trim().toLowerCase();
-    if (!key) return;
-    const idx = DAY_ALIASES[key];
-    if (typeof idx === "number") days.add(idx);
-  });
-  return days.size ? days : null;
-};
-
-const parseTime = (value) => {
-  if (!value) return null;
-  const [h, m] = String(value).split(":");
-  const hour = Number(h);
-  const minute = Number(m);
-  if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
-  return hour * 60 + minute;
-};
-
-const formatTime = (minutes) => {
-  if (minutes == null) return "--:--";
-  const hour = Math.floor(minutes / 60)
-    .toString()
-    .padStart(2, "0");
-  const minute = Math.floor(minutes % 60)
-    .toString()
-    .padStart(2, "0");
-  return `${hour}:${minute}`;
-};
-
-const getZonedParts = (timeZone) => {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    weekday: "short",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  const parts = formatter.formatToParts(new Date());
-  const map = {};
-  parts.forEach((part) => {
-    map[part.type] = part.value;
-  });
-  const weekdayIndex = DAY_NAMES.findIndex((day) => day === map.weekday);
-  return {
-    weekdayIndex,
-    hour: Number(map.hour),
-    minute: Number(map.minute),
-  };
-};
-
-const buildSchedulePreview = (schedule) => {
-  if (!schedule || typeof schedule !== "object") {
-    return {
-      summary: "Set a schedule to control run windows.",
-      status: "No schedule configured",
-      window: "",
-      timezone: LOCAL_TZ,
-    };
-  }
-  if (schedule.enabled === false) {
-    return {
-      summary: "Run window scheduling is currently disabled.",
-      status: "Scheduling off",
-      window: "Anytime",
-      timezone: schedule.timezone || LOCAL_TZ,
-    };
-  }
-
-  const timezone = schedule.timezone || LOCAL_TZ;
-  const start = parseTime(schedule.window_start);
-  const end = parseTime(schedule.window_end);
-  const days = parseDays(schedule.days);
-  const now = getZonedParts(timezone);
-  const currentMinutes = now.hour * 60 + now.minute;
-  const windowLabel =
-    start != null && end != null ? `${formatTime(start)} - ${formatTime(end)}` : "Anytime";
-  const daysLabel = Array.isArray(schedule.days)
-    ? schedule.days.map((day) => String(day).slice(0, 3)).join(", ")
-    : schedule.days || "Every day";
-
-  let status = "Next run scheduled";
-  let nextLabel = "Upcoming";
-  if (start != null && end != null) {
-    if (!days || days.has(now.weekdayIndex)) {
-      if (currentMinutes >= start && currentMinutes < end) {
-        status = "Active now";
-        nextLabel = "Today";
-      } else if (currentMinutes < start) {
-        nextLabel = "Today";
-      } else {
-        nextLabel = "Tomorrow";
-      }
-    } else {
-      nextLabel = "Next run";
-    }
-  }
-
-  return {
-    summary: `${daysLabel} - ${windowLabel}`,
-    status,
-    window: `${nextLabel} - ${windowLabel}`,
-    timezone,
-  };
-};
+const buildSchedulePreview = () => ({
+  summary: "Runs continuously (no schedule window).",
+  status: "Always on",
+  window: "Anytime",
+  timezone: LOCAL_TZ,
+});
 
 export default function ClientOverview() {
   const { slots, loading, error, actions } = useOutletContext();
@@ -163,10 +37,11 @@ export default function ClientOverview() {
     const total = slots.length;
     const running = slots.filter((s) => s.status === "RUNNING").length;
     const stopped = slots.filter((s) => s.status === "STOPPED").length;
-    const totalLeads = slots.reduce(
-      (acc, slot) => acc + Number(slot.metrics?.leads_parsed || 0),
-      0
-    );
+    const totalLeads = slots.reduce((acc, slot) => {
+      const totalParsed = Number(slot.metrics?.leads_parsed || 0);
+      const baseline = Number(slot.run_leads_start || 0);
+      return acc + Math.max(0, totalParsed - baseline);
+    }, 0);
     return { total, running, stopped, totalLeads };
   }, [slots]);
 
@@ -193,13 +68,18 @@ export default function ClientOverview() {
         if (!alive) return;
 
         const limits = limitsRes.status === "fulfilled" ? limitsRes.value : {};
-        const config = configRes.status === "fulfilled" ? configRes.value?.config || {} : {};
-        const schedule = config.client_schedule || {};
-        setLeadTarget(Number(limits.max_clicks_per_run || 120));
-        setSchedulePreview(buildSchedulePreview(schedule));
+        setLeadTarget(
+          Number(
+            limits.max_verified_leads_per_cycle ??
+              limits.max_clicks_per_cycle ??
+              limits.max_clicks_per_run ??
+              0
+          )
+        );
+        setSchedulePreview(buildSchedulePreview());
       } catch (err) {
         if (!alive) return;
-        setSchedulePreview(buildSchedulePreview({}));
+        setSchedulePreview(buildSchedulePreview());
       }
     };
 

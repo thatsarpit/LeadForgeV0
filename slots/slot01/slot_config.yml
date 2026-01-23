@@ -1,116 +1,101 @@
-# LeadForge Slot 01 Configuration
-# Last cleaned: 2026-01-21
-
-# Search configuration - product keywords to capture
 search_terms:
-  - ivermectin
-  - albendazole
-  - mebendazole
-  - nitazoxanide
-  - doxycycline
-  - azithromycin
-  - metronidazole
-  - rifaximin
-  - zopiclone
-  - eszopiclone
-  - pregabalin
-  - gabapentin
-  - carisoprodol
-  - tapentadol
-  - baclofen
-  - tizanidine
-  - testosterone
-  - testosterone cypionate
-  - testosterone enanthate
-  - testosterone propionate
-  - trenbolone
-  - nandrolone
-  - boldenone
-  - oxandrolone
-  - anavar
-  - winstrol
-  - dianabol
-  - sustanon
-  - semaglutide
-  - liraglutide
-  - tirzepatide
-  - retatrutide
-  - clenbuterol
-  - cytomel
-  - liothyronine
-  - sildenafil
-  - tadalafil
-  - vardenafil
-  - avanafil
-  - kamagra
-  - minoxidil
-  - finasteride
-  - dutasteride
-  - isotretinoin
-  - accutane
-  - tretinoin
-  - tenofovir
-  - modafinil
-  - armodafinil
-  - hydroxychloroquine
-  - dexamethasone
-  - prednisone
-
-# Terms to exclude (blacklist)
+- ivermectin
+- albendazole
+- mebendazole
+- nitazoxanide
+- doxycycline
+- azithromycin
+- metronidazole
+- rifaximin
+- zopiclone
+- eszopiclone
+- pregabalin
+- gabapentin
+- carisoprodol
+- tapentadol
+- baclofen
+- tizanidine
+- testosterone
+- testosterone cypionate
+- testosterone enanthate
+- testosterone propionate
+- trenbolone
+- nandrolone
+- boldenone
+- oxandrolone
+- anavar
+- winstrol
+- dianabol
+- sustanon
+- semaglutide
+- liraglutide
+- tirzepatide
+- retatrutide
+- clenbuterol
+- cytomel
+- liothyronine
+- sildenafil
+- tadalafil
+- vardenafil
+- avanafil
+- kamagra
+- minoxidil
+- finasteride
+- dutasteride
+- isotretinoin
+- accutane
+- tretinoin
+- tenofovir
+- modafinil
+- armodafinil
+- hydroxychloroquine
+- dexamethasone
+- prednisone
 exclude_terms: []
-
-# Target countries (ISO codes + names)
 country:
-  - au
-  - australia
-  - us
-  - usa
-  - united states
-  - gb
-  - uk
-  - united kingdom
-  - de
-  - germany
-
-# Region codes for filtering
+- us
+- united states
+- usa
+- united states of america
+- gb
+- united kingdom
+- uk
+- great britain
+- britain
+- au
+- australia
 client_regions:
-  - AU
-  - US
-  - GB
-  - DE
-
-# WhatsApp integration
+- US
+- GB
+- AU
+max_lead_age_seconds: 30
+zero_second_only: false
+allow_unknown_age: false
+require_mobile_available: false
+require_email_verified: false
+recent_refresh_seconds: 2
+recent_wait_ms: 1200
+recent_wait_networkidle: false
+top_card_only: true
+top_card_count: 1
+max_new_per_cycle: 1
+headless: false
 whatsapp_enabled: false
 whatsapp_waha_session: slot01
 whatsapp_template: ''
 whatsapp_max_per_hour: 20
 whatsapp_min_delay_s: 25
 whatsapp_stop_on_reply: false
-
-# IndiaMART messaging
 indiamart_message_enabled: false
 indiamart_message_template: ''
 indiamart_message_max_per_day: 20
 indiamart_message_min_delay_s: 30
-
-# Schedule configuration
-client_schedule:
-  enabled: false
-  window_start: ''
-  window_end: ''
-  days:
-    - mon
-    - tue
-    - wed
-    - thu
-    - fri
-  timezone: Asia/Calcutta
-
-# Worker behavior
-max_clicks_per_cycle: 10
-max_clicks_per_run: 0
 max_run_minutes: 0
-max_lead_age_seconds: 30
-allow_unknown_age: true
-debug_snapshot: true
-prefer_api: false
+ks_per_cycle: 120
+require_mobile_verified: false
+require_email_available: false
+require_whatsapp_available: false
+quality_level: 70
+min_member_months: 0
+max_age_hours: 48
+max_verified_leads_per_cycle: 2

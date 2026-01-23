@@ -159,7 +159,11 @@ export default function AdminSlots() {
               <div className="engyne-detail-card">
                 <div className="engyne-detail-label">Leads parsed</div>
                 <div className="engyne-detail-value">
-                  {Number(selectedSlot.metrics?.leads_parsed || 0)}
+                  {(() => {
+                    const total = Number(selectedSlot.metrics?.leads_parsed || 0);
+                    const baseline = Number(selectedSlot.run_leads_start || 0);
+                    return Math.max(0, total - baseline);
+                  })()}
                 </div>
               </div>
               <div className="engyne-detail-card">

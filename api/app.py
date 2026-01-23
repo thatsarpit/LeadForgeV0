@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 import urllib.parse
 import uuid
@@ -15,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 import jwt
 import requests
+from requests.cookies import RequestsCookieJar
 from dotenv import load_dotenv
 from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
@@ -64,6 +66,9 @@ app.add_middleware(
 BASE_DIR = Path(__file__).resolve().parent.parent
 SLOTS_DIR = BASE_DIR / "slots"
 ENGINE_DIR = BASE_DIR / "core" / "engine"
+VENV_PYTHON = BASE_DIR / "venv" / "bin" / "python"
+DEFAULT_PYTHON = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
+PYTHON_BIN = os.getenv("PYTHON_BIN", DEFAULT_PYTHON)
 
 # AUTH_SECRET already validated above
 AUTH_ALGO = "HS256"
@@ -168,6 +173,108 @@ def save_slot_config(slot_id: str, config: dict):
     save_yaml(slot_dir / "slot_config.yml", config)
 
 
+def _load_slot_cookies(slot_id: str):
+    slot_dir = require_slot_dir(slot_id)
+    cookie_path = slot_dir / "session.enc"
+    if not cookie_path.exists() or cookie_path.stat().st_size == 0:
+        return None, None
+    try:
+        payload = json.loads(cookie_path.read_text())
+        mtime = cookie_path.stat().st_mtime
+        return payload, mtime
+    except Exception:
+        return None, None
+
+
+def _apply_cookie_payload(session: requests.Session, payload) -> bool:
+    if not payload:
+        return False
+    if isinstance(payload, dict):
+        session.cookies.update({str(k): str(v) for k, v in payload.items()})
+        return True
+    if isinstance(payload, list):
+        jar = RequestsCookieJar()
+        for cookie in payload:
+            if not isinstance(cookie, dict):
+                continue
+            name = cookie.get("name")
+            value = cookie.get("value")
+            if not name:
+                continue
+            params = {}
+            domain = cookie.get("domain")
+            path = cookie.get("path")
+            if domain:
+                params["domain"] = domain
+            if path:
+                params["path"] = path
+            if "secure" in cookie:
+                params["secure"] = bool(cookie.get("secure"))
+            expires = cookie.get("expires")
+            if isinstance(expires, (int, float)) and expires > 0:
+                params["expires"] = int(expires)
+            http_only = cookie.get("httpOnly")
+            if http_only is not None:
+                params["rest"] = {"HttpOnly": bool(http_only)}
+            jar.set(name, str(value or ""), **params)
+        session.cookies.update(jar)
+        return True
+    return False
+
+
+def _check_indiamart_login(slot_id: str) -> dict:
+    payload, mtime = _load_slot_cookies(slot_id)
+    if not payload:
+        return {
+            "status": "logged_out",
+            "reason": "no_cookies",
+            "has_cookies": False,
+            "cookie_updated_at": None,
+        }
+
+    session = requests.Session()
+    _apply_cookie_payload(session, payload)
+    url = "https://seller.indiamart.com/bltxn/?pref=recent"
+    try:
+        resp = session.get(url, timeout=(6, 14))
+    except Exception as exc:
+        return {
+            "status": "unknown",
+            "reason": f"request_error:{str(exc)[:80]}",
+            "has_cookies": True,
+            "cookie_updated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else None,
+        }
+
+    html = resp.text or ""
+    lower = html.lower()
+    logged_in_markers = []
+    logged_out_markers = []
+
+    for marker in ("bl_listing", "contact buyer now", "past transactions", "buyleads"):
+        if marker in lower:
+            logged_in_markers.append(marker)
+
+    for marker in ("free registration", "start selling", "sell on indiamart", "sign in"):
+        if marker in lower:
+            logged_out_markers.append(marker)
+
+    status = "unknown"
+    if logged_in_markers and not logged_out_markers:
+        status = "logged_in"
+    elif logged_out_markers and not logged_in_markers:
+        status = "logged_out"
+
+    return {
+        "status": status,
+        "has_cookies": True,
+        "cookie_updated_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else None,
+        "checked_url": resp.url,
+        "http_status": resp.status_code,
+        "logged_in_markers": logged_in_markers,
+        "logged_out_markers": logged_out_markers,
+    }
+
+
 def read_leads(slot_id: str, limit: int = 200) -> list[dict]:
     # Ensure slot exists (optional validation)
     require_slot_dir(slot_id)
@@ -178,15 +285,31 @@ def read_leads(slot_id: str, limit: int = 200) -> list[dict]:
     conn = get_connection()
     try:
         # Fetch newest leads first
-        cursor = conn.execute(
-            "SELECT raw_data FROM leads WHERE slot_id = ? ORDER BY fetched_at DESC LIMIT ?", 
-            (slot_id, limit)
-        )
-        for row in cursor:
-            try:
-                leads.append(json.loads(row["raw_data"]))
-            except Exception:
-                continue
+        if isinstance(conn, Session):
+            result = conn.execute(
+                text("SELECT raw_data FROM leads WHERE slot_id = :slot_id ORDER BY fetched_at DESC LIMIT :limit"),
+                {"slot_id": slot_id, "limit": limit},
+            )
+            rows = result.fetchall()
+            for row in rows:
+                raw = row._mapping.get("raw_data") if hasattr(row, "_mapping") else row[0]
+                try:
+                    if isinstance(raw, (dict, list)):
+                        leads.append(raw)
+                    else:
+                        leads.append(json.loads(raw))
+                except Exception:
+                    continue
+        else:
+            cursor = conn.execute(
+                "SELECT raw_data FROM leads WHERE slot_id = ? ORDER BY fetched_at DESC LIMIT ?", 
+                (slot_id, limit)
+            )
+            for row in cursor:
+                try:
+                    leads.append(json.loads(row["raw_data"]))
+                except Exception:
+                    continue
     finally:
         conn.close()
         
@@ -238,7 +361,10 @@ async def readiness_check(db: Session = Depends(get_db)):
     # Check leads database (SQLite/Postgres)
     try:
         conn = get_connection()
-        conn.execute("SELECT COUNT(*) FROM leads LIMIT 1")
+        if isinstance(conn, Session):
+            conn.execute(text("SELECT COUNT(*) FROM leads LIMIT 1"))
+        else:
+            conn.execute("SELECT COUNT(*) FROM leads LIMIT 1")
         conn.close()
         checks["checks"]["leads_db"] = "ok"
     except Exception as e:
@@ -1156,7 +1282,6 @@ def google_callback(request: Request, code: Optional[str] = None, state: Optiona
     db.commit()
 
     token = _issue_token(user)
-    print(f"DEBUG: Issued token for {email}: {token[:15]}...")
     return RedirectResponse(_append_fragment(redirect_url, {"token": token, "provider": "google"}))
 
 
@@ -1483,12 +1608,17 @@ def get_slot_leads(slot_id: str, limit: int = 200, user=Depends(get_current_user
 @app.get("/api/slots/{slot_id}/leads/download")
 def download_slot_leads(slot_id: str, user=Depends(get_current_user)):
     ensure_allowed_slot(user, slot_id)
-    slot_dir = require_slot_dir(slot_id)
-    leads_path = slot_dir / "leads.jsonl"
-    if not leads_path.exists():
-        raise HTTPException(status_code=404, detail="No leads found")
-    filename = f"{slot_id}_leads.jsonl"
-    return FileResponse(leads_path, filename=filename, media_type="text/plain")
+    # Stream latest leads from DB as JSONL (ndjson)
+    leads = read_leads(slot_id, limit=5000)
+    
+    def iter_jsonl():
+        for lead in leads:
+            try:
+                yield json.dumps(lead, separators=(",", ":")) + "\n"
+            except Exception:
+                continue
+    headers = {"Content-Disposition": f'attachment; filename="{slot_id}_leads.jsonl"'}
+    return StreamingResponse(iter_jsonl(), media_type="application/x-ndjson", headers=headers)
 
 
 @app.get("/slots/{slot_id}/quality")
@@ -1500,6 +1630,11 @@ def get_slot_quality(slot_id: str, user=Depends(get_current_user)):
         "quality_level": int(config.get("quality_level") or 70),
         "min_member_months": int(config.get("min_member_months") or 0),
         "max_age_hours": int(config.get("max_age_hours") or 48),
+        "max_verified_leads_per_cycle": int(
+            config.get("max_verified_leads_per_cycle")
+            or config.get("max_clicks_per_cycle")
+            or 0
+        ),
     }
 
 
@@ -1515,11 +1650,22 @@ def update_slot_quality(
     payload = body or {}
     if "quality_level" in payload:
         config["quality_level"] = int(payload.get("quality_level") or 0)
+    if "min_member_months" in payload:
+        config["min_member_months"] = int(payload.get("min_member_months") or 0)
+    if "max_age_hours" in payload:
+        config["max_age_hours"] = int(payload.get("max_age_hours") or 0)
+    if "max_verified_leads_per_cycle" in payload:
+        config["max_verified_leads_per_cycle"] = int(payload.get("max_verified_leads_per_cycle") or 0)
     save_slot_config(slot_id, config)
     return {
         "quality_level": int(config.get("quality_level") or 70),
         "min_member_months": int(config.get("min_member_months") or 0),
         "max_age_hours": int(config.get("max_age_hours") or 48),
+        "max_verified_leads_per_cycle": int(
+            config.get("max_verified_leads_per_cycle")
+            or config.get("max_clicks_per_cycle")
+            or 0
+        ),
     }
 
 
@@ -1529,7 +1675,12 @@ def get_slot_client_limits(slot_id: str, user=Depends(get_current_user)):
     ensure_allowed_slot(user, slot_id)
     config = load_slot_config(slot_id)
     return {
-        "max_clicks_per_run": int(config.get("max_clicks_per_run") or 0),
+        "max_verified_leads_per_cycle": int(
+            config.get("max_verified_leads_per_cycle")
+            or config.get("max_clicks_per_cycle")
+            or config.get("max_clicks_per_run")
+            or 0
+        ),
         "max_run_minutes": int(config.get("max_run_minutes") or 0),
     }
 
@@ -1544,13 +1695,18 @@ def update_slot_client_limits(
     ensure_allowed_slot(user, slot_id)
     payload = body or {}
     config = load_slot_config(slot_id)
-    if "max_clicks_per_run" in payload:
-        config["max_clicks_per_run"] = int(payload.get("max_clicks_per_run") or 0)
+    if "max_verified_leads_per_cycle" in payload:
+        config["max_verified_leads_per_cycle"] = int(payload.get("max_verified_leads_per_cycle") or 0)
     if "max_run_minutes" in payload:
         config["max_run_minutes"] = int(payload.get("max_run_minutes") or 0)
     save_slot_config(slot_id, config)
     return {
-        "max_clicks_per_run": int(config.get("max_clicks_per_run") or 0),
+        "max_verified_leads_per_cycle": int(
+            config.get("max_verified_leads_per_cycle")
+            or config.get("max_clicks_per_cycle")
+            or config.get("max_clicks_per_run")
+            or 0
+        ),
         "max_run_minutes": int(config.get("max_run_minutes") or 0),
     }
 
@@ -1561,6 +1717,16 @@ def get_slot_login_mode(slot_id: str, user=Depends(get_current_user)):
     ensure_allowed_slot(user, slot_id)
     config = load_slot_config(slot_id)
     return {"login_mode": bool(config.get("login_mode", False))}
+
+
+@app.get("/slots/{slot_id}/login-status")
+@app.get("/api/slots/{slot_id}/login-status")
+def get_slot_login_status(slot_id: str, user=Depends(get_current_user)):
+    ensure_allowed_slot(user, slot_id)
+    status = _check_indiamart_login(slot_id)
+    status["slot_id"] = slot_id
+    status["checked_at"] = datetime.now(timezone.utc).isoformat()
+    return status
 
 
 @app.post("/slots/{slot_id}/login-mode")
@@ -1835,24 +2001,20 @@ def start_slot(slot_id: str, user=Depends(get_current_user)):
     if not state.get("mode"):
         state["mode"] = DEFAULT_SLOT_MODE
 
-    process = subprocess.Popen(
-        ["python3", str(ENGINE_DIR / "runner.py"), slot_id],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
+    # Delegate to slot_manager via command file
     state.update(
         {
-            "status": "RUNNING",
-            "pid": process.pid,
+            "status": "STARTING",
+            "pid": None,
+            "command": "START",
             "last_command": "START",
+            "started_at": datetime.utcnow().isoformat() + "Z",
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
     )
 
     save_json(state_file, state)
-    return {"status": "started", "pid": process.pid}
+    return {"status": "starting"}
 
 
 @app.post("/slots/{slot_id}/stop")
@@ -1866,27 +2028,18 @@ def stop_slot(slot_id: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Slot not found")
 
     state = load_json(state_file, {})
-    pid = state.get("pid")
-
-    if not pid:
-        return {"status": "not_running"}
-
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except Exception:
-        pass
-
     state.update(
         {
-            "status": "STOPPED",
+            "status": "STOPPING",
             "pid": None,
+            "command": "STOP",
             "last_command": "STOP",
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
     )
 
     save_json(state_file, state)
-    return {"status": "stopped"}
+    return {"status": "stopping"}
 
 
 @app.post("/slots/{slot_id}/restart")
@@ -2086,6 +2239,21 @@ def get_cluster_login_mode(
     if not node.get("base_url"):
         return get_slot_login_mode(slot_id, user)
     return node_request_json(node, db, "GET", f"/slots/{slot_id}/login-mode")
+
+
+@app.get("/cluster/slots/{node_id}/{slot_id}/login-status")
+@app.get("/api/cluster/slots/{node_id}/{slot_id}/login-status")
+def get_cluster_login_status(
+    node_id: str,
+    slot_id: str,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin_or_allowed(user, slot_id)
+    node = resolve_node(node_id)
+    if not node.get("base_url"):
+        return get_slot_login_status(slot_id, user)
+    return node_request_json(node, db, "GET", f"/slots/{slot_id}/login-status")
 
 
 @app.post("/cluster/slots/{node_id}/{slot_id}/login-mode")

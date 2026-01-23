@@ -147,6 +147,13 @@ export async function fetchSlotClientLimits(slotId, nodeId) {
   return request(`/slots/${slotId}/client-limits`);
 }
 
+export async function fetchSlotLoginStatus(slotId, nodeId) {
+  if (nodeId) {
+    return request(`/cluster/slots/${nodeId}/${slotId}/login-status`);
+  }
+  return request(`/slots/${slotId}/login-status`);
+}
+
 export async function updateSlotClientLimits(slotId, payload, nodeId) {
   if (nodeId) {
     return request(`/cluster/slots/${nodeId}/${slotId}/client-limits`, {

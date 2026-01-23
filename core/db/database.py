@@ -13,6 +13,32 @@ from typing import Optional, Set
 from datetime import datetime, timezone
 from pathlib import Path
 
+
+def _db_lead_key(slot_id: str, lead_id: str) -> Optional[str]:
+    """
+    Namespace lead IDs per slot to avoid collisions across slots.
+    Returns a namespaced key of the form "<slot_id>::<lead_id>".
+    """
+    lead = str(lead_id or "").strip()
+    slot = str(slot_id or "").strip()
+    if not lead:
+        return None
+    return f"{slot}::{lead}" if slot else lead
+
+
+def _strip_db_lead_key(db_key: str, slot_id: Optional[str] = None) -> str:
+    """
+    Remove slot namespace from a stored lead key. If slot_id is provided and
+    the key matches that prefix, it is removed; otherwise the suffix after the
+    first '::' is returned. If no namespace exists, the key is returned.
+    """
+    key = str(db_key or "").strip()
+    if "::" not in key:
+        return key
+    if slot_id and key.startswith(f"{slot_id}::"):
+        return key.split("::", 1)[1]
+    return key.split("::", 1)[1]
+
 logger = logging.getLogger("leadforge.db")
 
 # Environment detection
@@ -40,19 +66,18 @@ if USE_POSTGRES and DATABASE_URL:
         logger.info("Postgres schema managed by Alembic migrations")
     
     def save_lead_to_db(lead_data: dict, slot_id: str):
-        """Save lead to Postgres"""
+        """Save lead to Postgres with slot-namespaced key to avoid cross-slot collisions."""
         session = SessionLocal()
         try:
-            lead_id = lead_data.get("lead_id") or lead_data.get("id")
-            if not lead_id:
+            raw_lead_id = lead_data.get("lead_id") or lead_data.get("id")
+            db_lead_id = _db_lead_key(slot_id, raw_lead_id)
+            if not db_lead_id:
                 logger.error("Cannot save lead without ID")
                 return
             
-            # Check if exists
-            existing = session.query(Lead).filter(Lead.lead_id == lead_id).first()
+            existing = session.query(Lead).filter(Lead.lead_id == db_lead_id).first()
             
             if existing:
-                # Update
                 existing.title = lead_data.get("title")
                 existing.url = lead_data.get("url") or lead_data.get("detail_url")
                 existing.country = lead_data.get("country")
@@ -61,9 +86,8 @@ if USE_POSTGRES and DATABASE_URL:
                 existing.verified_at = lead_data.get("verified_at")
                 existing.raw_data = lead_data
             else:
-                # Insert
                 new_lead = Lead(
-                    lead_id=lead_id,
+                    lead_id=db_lead_id,
                     slot_id=slot_id,
                     title=lead_data.get("title"),
                     url=lead_data.get("url") or lead_data.get("detail_url"),
@@ -85,12 +109,12 @@ if USE_POSTGRES and DATABASE_URL:
             session.close()
     
     def get_slot_lead_ids(slot_id: str, limit: int = 5000) -> Set[str]:
-        """Get existing lead IDs for deduplication"""
+        """Get existing lead IDs for deduplication (returns raw IDs without slot prefix)."""
         session = SessionLocal()
         try:
             stmt = select(Lead.lead_id).where(Lead.slot_id == slot_id).order_by(Lead.fetched_at.desc()).limit(limit)
             results = session.execute(stmt).scalars().all()
-            return set(results)
+            return {_strip_db_lead_key(r, slot_id) for r in results}
         except Exception as e:
             logger.error(f"Failed to fetch existing keys: {e}")
             return set()
@@ -105,9 +129,12 @@ if USE_POSTGRES and DATABASE_URL:
         verified_at_dt = verified_at or datetime.now(timezone.utc).isoformat()
         session = SessionLocal()
         try:
+            db_ids = [_db_lead_key(slot_id, lid) for lid in verified_ids if _db_lead_key(slot_id, lid)]
+            if not db_ids:
+                return
             stmt = (
                 update(Lead)
-                .where(Lead.slot_id == slot_id, Lead.lead_id.in_(list(verified_ids)))
+                .where(Lead.slot_id == slot_id, Lead.lead_id.in_(db_ids))
                 .values(status="verified", verified_at=verified_at_dt)
             )
             session.execute(stmt)
@@ -173,11 +200,12 @@ else:
             conn.close()
     
     def save_lead_to_db(lead_data: dict, slot_id: str):
-        """Save lead to SQLite"""
+        """Save lead to SQLite with slot-namespaced key to avoid cross-slot collisions."""
         conn = get_connection()
         try:
-            lead_id = lead_data.get("lead_id") or lead_data.get("id")
-            if not lead_id:
+            raw_lead_id = lead_data.get("lead_id") or lead_data.get("id")
+            db_lead_id = _db_lead_key(slot_id, raw_lead_id)
+            if not db_lead_id:
                 logger.error("Cannot save lead without ID")
                 return
 
@@ -187,22 +215,24 @@ else:
             status = lead_data.get("status", "captured")
             fetched_at = lead_data.get("fetched_at")
             clicked_at = lead_data.get("clicked_at")
+            verified_at = lead_data.get("verified_at")
             raw_json = json.dumps(lead_data)
 
             with conn:
                 conn.execute("""
                     INSERT INTO leads (
                         lead_id, slot_id, title, url, country, status, 
-                        fetched_at, clicked_at, raw_data
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        fetched_at, clicked_at, verified_at, raw_data
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(lead_id) DO UPDATE SET
                         status=excluded.status,
                         clicked_at=excluded.clicked_at,
+                        verified_at=excluded.verified_at,
                         raw_data=excluded.raw_data,
                         updated_at=CURRENT_TIMESTAMP
                 """, (
-                    lead_id, slot_id, title, url, country, status, 
-                    fetched_at, clicked_at, raw_json
+                    db_lead_id, slot_id, title, url, country, status, 
+                    fetched_at, clicked_at, verified_at, raw_json
                 ))
         except Exception as e:
             logger.error(f"Failed to save lead {lead_data.get('lead_id')}: {e}")
@@ -211,14 +241,14 @@ else:
             conn.close()
     
     def get_slot_lead_ids(slot_id: str, limit: int = 5000) -> Set[str]:
-        """Get existing lead IDs"""
+        """Get existing lead IDs (without slot prefix)"""
         conn = get_connection()
         try:
             cursor = conn.execute(
                 "SELECT lead_id FROM leads WHERE slot_id = ? ORDER BY fetched_at DESC LIMIT ?", 
                 (slot_id, limit)
             )
-            return {row["lead_id"] for row in cursor}
+            return {_strip_db_lead_key(row["lead_id"], slot_id) for row in cursor}
         except Exception as e:
             logger.error(f"Failed to fetch existing keys: {e}")
             return set()
@@ -233,7 +263,9 @@ else:
         verified_at = verified_at or datetime.now(timezone.utc).isoformat()
         conn = get_connection()
         try:
-            ids_list = list(verified_ids)
+            ids_list = [_db_lead_key(slot_id, lid) for lid in verified_ids if _db_lead_key(slot_id, lid)]
+            if not ids_list:
+                return
             placeholders = ",".join("?" * len(ids_list))
             
             query = f"""
