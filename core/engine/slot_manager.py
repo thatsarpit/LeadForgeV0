@@ -184,6 +184,22 @@ def stop_runner(pid, slot_id, timeout=5):
         pass
     # Also sweep any orphaned workers/browsers still running for this slot.
     kill_slot_processes(slot_id, sig=signal.SIGTERM)
+    # If runner PID differs from worker PID in state, stop that group too.
+    try:
+        state_file = SLOTS_DIR / slot_id / "slot_state.json"
+        state = load_json(state_file, {})
+        worker_pid = state.get("pid")
+        if worker_pid and worker_pid != pid:
+            try:
+                os.killpg(os.getpgid(worker_pid), signal.SIGTERM)
+            except Exception:
+                pass
+            try:
+                os.kill(worker_pid, signal.SIGTERM)
+            except Exception:
+                pass
+    except Exception:
+        pass
     waited = 0
     while waited < timeout:
         if not is_process_running(pid):
@@ -207,6 +223,22 @@ def stop_runner(pid, slot_id, timeout=5):
     except Exception:
         pass
     kill_slot_processes(slot_id, sig=signal.SIGKILL)
+    # Force kill worker pid if it diverged
+    try:
+        state_file = SLOTS_DIR / slot_id / "slot_state.json"
+        state = load_json(state_file, {})
+        worker_pid = state.get("pid")
+        if worker_pid and worker_pid != pid:
+            try:
+                os.killpg(os.getpgid(worker_pid), signal.SIGKILL)
+            except Exception:
+                pass
+            try:
+                os.kill(worker_pid, signal.SIGKILL)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 def within_startup_grace(state):
     started_at = state.get("started_at")
