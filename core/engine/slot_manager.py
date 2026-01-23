@@ -407,13 +407,13 @@ while True:
             dirty = False
 
             if status in ("RUNNING", "STARTING", "STOPPING"):
-                # --- STARTUP GRACE WINDOW ---
-                if within_startup_grace(state):
-                    continue
+                in_startup_grace = within_startup_grace(state)
 
                 # --- PID CHECK ---
                 # If command is START or status is STARTING, we are about to start it
-                if command == "START" or status == "STARTING":
+                if in_startup_grace:
+                    pass
+                elif command == "START" or status == "STARTING":
                     pass
                 elif not pid or not is_process_running(pid):
                     print(f"[SLOT_MANAGER] ❌ Dead/Missing PID for {slot_id} in {status}, marking STOPPED")
@@ -429,7 +429,9 @@ while True:
 
                 # --- HEARTBEAT CHECK ---
                 # (Same logic as before)
-                if not last_hb:
+                if in_startup_grace:
+                    pass
+                elif not last_hb:
                     # allow missing heartbeat AFTER grace? strictness check
                     if status == "RUNNING":
                         # If running and NO heartbeat after grace -> Mark as DEAD and stop process
@@ -447,7 +449,9 @@ while True:
                         continue
                     # For STARTING/STOPPING without heartbeat, allow command handling to proceed
 
-                if last_hb:
+                if in_startup_grace:
+                    pass
+                elif last_hb:
                     try:
                         last = datetime.fromisoformat(last_hb)
                         # Make timezone-aware if needed
