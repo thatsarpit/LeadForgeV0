@@ -18,6 +18,8 @@ export default function RemoteLogin() {
   const containerRef = useRef(null);
   const imgRef = useRef(null);
   const wsRef = useRef(null);
+  const lastFrameRef = useRef(0);
+  const pollRef = useRef(null);
 
   const viewport = useMemo(() => {
     return session?.viewport || { width: 1280, height: 800 };
@@ -70,6 +72,12 @@ export default function RemoteLogin() {
         const payload = JSON.parse(event.data);
         if (payload.type === "frame" && imgRef.current) {
           imgRef.current.src = `data:image/jpeg;base64,${payload.data}`;
+          const prev = imgRef.current.dataset.frameUrl;
+          if (prev) {
+            URL.revokeObjectURL(prev);
+            delete imgRef.current.dataset.frameUrl;
+          }
+          lastFrameRef.current = Date.now();
         }
         if (payload.type === "status") {
           setStatus(payload.status || "active");
@@ -84,6 +92,57 @@ export default function RemoteLogin() {
 
     return () => {
       ws.close();
+    };
+  }, [session]);
+
+  useEffect(() => {
+    if (!session?.session_id) return;
+    let stopped = false;
+
+    const tick = async () => {
+      if (stopped) return;
+      const idleFor = Date.now() - lastFrameRef.current;
+      if (idleFor < 1500) {
+        pollRef.current = window.setTimeout(tick, 1000);
+        return;
+      }
+      try {
+        const base = session.api_base || window.location.origin;
+        const url = new URL(`/remote-login/sessions/${session.session_id}/frame`, base);
+        url.searchParams.set("_", Date.now().toString());
+        const token = getToken();
+        const res = await fetch(url.toString(), {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          if (imgRef.current) {
+            const objUrl = URL.createObjectURL(blob);
+            const prev = imgRef.current.dataset.frameUrl;
+            imgRef.current.src = objUrl;
+            imgRef.current.dataset.frameUrl = objUrl;
+            lastFrameRef.current = Date.now();
+            if (prev) {
+              URL.revokeObjectURL(prev);
+            }
+          }
+        }
+      } catch (err) {
+        // Ignore polling errors; WS frames will take precedence when available.
+      } finally {
+        pollRef.current = window.setTimeout(tick, 1000);
+      }
+    };
+
+    tick();
+    return () => {
+      stopped = true;
+      if (pollRef.current) {
+        window.clearTimeout(pollRef.current);
+      }
+      if (imgRef.current?.dataset?.frameUrl) {
+        URL.revokeObjectURL(imgRef.current.dataset.frameUrl);
+      }
     };
   }, [session]);
 

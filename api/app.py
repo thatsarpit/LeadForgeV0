@@ -1,5 +1,6 @@
 from collections import deque
 import asyncio
+import base64
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
@@ -13,7 +14,7 @@ import uuid
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse, Response
 import jwt
 import requests
 from requests.cookies import RequestsCookieJar
@@ -417,6 +418,9 @@ class RemoteLoginSession:
         }
         self._closed = False
         self._start_lock = asyncio.Lock()
+        self._last_frame_ts = 0.0
+        self._screenshot_task = None
+        self._capture_lock = asyncio.Lock()
 
     async def _broadcast_status(self):
         payload = {
@@ -545,19 +549,25 @@ class RemoteLoginSession:
                 def _on_frame(params):
                     asyncio.create_task(self._handle_frame(params))
 
-                self.cdp.on("Page.screencastFrame", _on_frame)
-                await self.cdp.send(
-                    "Page.startScreencast",
-                    {
-                        "format": "jpeg",
-                        "quality": 70,
-                        "maxWidth": self.viewport["width"],
-                        "maxHeight": self.viewport["height"],
-                        "everyNthFrame": 1,
-                    },
-                )
+                if self.cdp:
+                    self.cdp.on("Page.screencastFrame", _on_frame)
+                    try:
+                        await self.cdp.send(
+                            "Page.startScreencast",
+                            {
+                                "format": "jpeg",
+                                "quality": 70,
+                                "maxWidth": self.viewport["width"],
+                                "maxHeight": self.viewport["height"],
+                                "everyNthFrame": 1,
+                            },
+                        )
+                    except Exception:
+                        pass
                 self.status = "active"
                 await self._broadcast_status()
+                if not self._screenshot_task:
+                    self._screenshot_task = asyncio.create_task(self._screenshot_loop())
             except Exception as exc:
                 if "last_exc" in locals() and last_exc is not None:
                     exc = last_exc
@@ -580,12 +590,32 @@ class RemoteLoginSession:
         data = params.get("data")
         if not data:
             return
+        self._last_frame_ts = time.time()
         payload = {"type": "frame", "data": data, "timestamp": time.time()}
         for ws in list(self.viewers):
             try:
                 await ws.send_json(payload)
             except Exception:
                 self.viewers.discard(ws)
+
+    async def _screenshot_loop(self):
+        while not self._closed:
+            await asyncio.sleep(1)
+            if not self.page:
+                continue
+            if time.time() - self._last_frame_ts < 2:
+                continue
+            try:
+                img = await self.page.screenshot(type="jpeg", quality=70)
+            except Exception:
+                continue
+            data = base64.b64encode(img).decode("ascii")
+            payload = {"type": "frame", "data": data, "timestamp": time.time(), "fallback": True}
+            for ws in list(self.viewers):
+                try:
+                    await ws.send_json(payload)
+                except Exception:
+                    self.viewers.discard(ws)
 
     async def handle_input(self, message: dict):
         if not self.page or self._closed:
@@ -642,6 +672,8 @@ class RemoteLoginSession:
         if self._closed:
             return
         self._closed = True
+        if self._screenshot_task:
+            self._screenshot_task.cancel()
         try:
             if self.context:
                 await self.context.close()
@@ -2109,6 +2141,28 @@ async def finish_remote_login_session(
     return {"finished": True}
 
 
+@app.get("/remote-login/sessions/{session_id}/frame")
+@app.get("/api/remote-login/sessions/{session_id}/frame")
+async def get_remote_login_frame(
+    session_id: str,
+    user=Depends(get_current_user),
+):
+    if not REMOTE_LOGIN_ENABLED:
+        raise HTTPException(status_code=501, detail="Remote login not enabled on this node")
+    session = REMOTE_LOGIN_MANAGER.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    ensure_allowed_slot(user, session.slot_id)
+    if session._closed or not session.page:
+        raise HTTPException(status_code=503, detail="Remote login session not ready")
+    try:
+        async with session._capture_lock:
+            img = await session.page.screenshot(type="jpeg", quality=70)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Failed to capture frame")
+    return Response(content=img, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 @app.post("/slots/{slot_id}/start")
 @app.post("/api/slots/{slot_id}/start")
 def start_slot(slot_id: str, user=Depends(get_current_user)):
@@ -2273,7 +2327,7 @@ def get_cluster_slot_leads(
     require_admin_or_allowed(user, slot_id)
     node = resolve_node(node_id)
     if not node.get("base_url"):
-        return get_slot_leads(slot_id, limit, user)
+        return get_slot_leads(slot_id, limit=limit, include_rejected=include_rejected, user=user)
     return node_request_json(
         node,
         db,

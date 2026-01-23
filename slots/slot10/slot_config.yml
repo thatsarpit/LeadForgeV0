@@ -54,6 +54,8 @@ search_terms:
 - amlodipine
 - telmisartan
 - testosign gel
+- anastrozole
+- naltraxone
 exclude_terms: []
 country:
 - au
@@ -84,7 +86,7 @@ indiamart_message_enabled: false
 indiamart_message_template: ''
 indiamart_message_max_per_day: 20
 indiamart_message_min_delay_s: 30
-max_run_minutes: 180
+max_run_minutes: 0
 max_lead_age_seconds: 30
 allow_unknown_age: false
 debug_snapshot: true
@@ -97,3 +99,6 @@ require_mobile_available: true
 require_email_verified: false
 headless: false
 max_verified_leads_per_cycle: 15
+require_mobile_verified: false
+require_email_available: true
+require_whatsapp_available: false
