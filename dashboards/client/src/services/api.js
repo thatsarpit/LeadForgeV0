@@ -196,6 +196,17 @@ export async function stopSlot(slotId, nodeId) {
   });
 }
 
+export async function pauseSlot(slotId, nodeId) {
+  if (nodeId) {
+    return request(`/cluster/slots/${nodeId}/${slotId}/pause`, {
+      method: "POST",
+    });
+  }
+  return request(`/slots/${slotId}/pause`, {
+    method: "POST",
+  });
+}
+
 export async function restartSlot(slotId, nodeId) {
   if (nodeId) {
     return request(`/cluster/slots/${nodeId}/${slotId}/restart`, {

@@ -97,7 +97,7 @@ export default function AdminSlots() {
                         className="engyne-btn engyne-btn--ghost engyne-btn--small"
                         onClick={(event) => {
                           event.stopPropagation();
-                          actions.stop(slot);
+                          actions.pause(slot);
                         }}
                       >
                         <Pause size={14} />

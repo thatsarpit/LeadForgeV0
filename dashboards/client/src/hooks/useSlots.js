@@ -3,6 +3,7 @@ import {
   fetchSlots,
   startSlot,
   stopSlot,
+  pauseSlot,
   restartSlot,
 } from "../services/api";
 
@@ -80,6 +81,7 @@ export default function useSlots({ pollInterval = 3000 } = {}) {
     try {
       if (action === "start") await startSlot(resolved.id, resolved.nodeId);
       if (action === "stop") await stopSlot(resolved.id, resolved.nodeId);
+      if (action === "pause") await pauseSlot(resolved.id, resolved.nodeId);
       if (action === "restart") await restartSlot(resolved.id, resolved.nodeId);
 
       await loadSlots(); // backend reconciliation
@@ -97,6 +99,7 @@ export default function useSlots({ pollInterval = 3000 } = {}) {
     actions: {
       start: (slotOrId, nodeId) => handleAction(slotOrId, "start", nodeId),
       stop: (slotOrId, nodeId) => handleAction(slotOrId, "stop", nodeId),
+      pause: (slotOrId, nodeId) => handleAction(slotOrId, "pause", nodeId),
       restart: (slotOrId, nodeId) => handleAction(slotOrId, "restart", nodeId),
     },
   };

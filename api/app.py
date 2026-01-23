@@ -1917,12 +1917,25 @@ def get_whatsapp_qr(slot_id: str, user=Depends(get_current_user)):
 @app.post("/api/slots/{slot_id}/pause")
 def pause_slot(slot_id: str, user=Depends(get_current_user)):
     ensure_allowed_slot(user, slot_id)
-    stop_slot(slot_id, user)
-    state = load_slot_state(slot_id)
-    state["status"] = "STOPPED"
-    state["last_command"] = "PAUSE"
-    state["updated_at"] = datetime.utcnow().isoformat() + "Z"
-    save_json(slot_path(slot_id) / "slot_state.json", state)
+    slot_dir = slot_path(slot_id)
+    state_file = slot_dir / "slot_state.json"
+
+    if not slot_dir.exists():
+        raise HTTPException(status_code=404, detail="Slot not found")
+
+    state = load_json(state_file, {})
+    state.update(
+        {
+            "status": "PAUSED",
+            # Preserve PID so slot_manager can stop the correct process group.
+            "pid": state.get("pid"),
+            "command": "PAUSE",
+            "last_command": "PAUSE",
+            "auto_resume": False,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+    )
+    save_json(state_file, state)
     return {"status": "paused"}
 
 
@@ -2047,9 +2060,11 @@ def stop_slot(slot_id: str, user=Depends(get_current_user)):
     state.update(
         {
             "status": "STOPPING",
-            "pid": None,
+            # Preserve PID so slot_manager can stop the correct process group.
+            "pid": state.get("pid"),
             "command": "STOP",
             "last_command": "STOP",
+            "auto_resume": False,
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
     )

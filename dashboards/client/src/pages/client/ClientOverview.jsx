@@ -251,7 +251,7 @@ export default function ClientOverview() {
                 {liveSlot.status === "RUNNING" ? (
                   <button
                     className="engyne-btn engyne-btn--ghost"
-                    onClick={() => actions.stop(liveSlot)}
+                    onClick={() => actions.pause(liveSlot)}
                   >
                     <Pause size={14} />
                     Pause slot
