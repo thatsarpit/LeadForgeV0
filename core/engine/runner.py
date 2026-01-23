@@ -80,6 +80,7 @@ def main():
         ],
         cwd=BASE_DIR,
         env=env,
+        start_new_session=True,
     )
 
     write_state(state_file, {
